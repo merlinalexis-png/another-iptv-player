@@ -260,6 +260,9 @@
 "player.subtitle_import.button" = "导入字幕文件";
 "player.subtitle_import.footer" = "导入的字幕会为该内容保存，下次播放时自动加载。";
 "player.subtitle_import.failed" = "无法导入字幕文件。";
+"player.audio_delay.section" = "音频同步";
+"player.audio_delay.label" = "音频延迟";
+"player.audio_delay.footer" = "正值使音频延后，负值使音频提前。适用于蓝牙耳机和回音壁。";
 
 // MARK: - Player (overlay, tracks & subtitle appearance)
 "player.all_channels" = "全部频道";

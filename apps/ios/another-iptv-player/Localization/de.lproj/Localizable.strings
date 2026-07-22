@@ -260,6 +260,9 @@
 "player.subtitle_import.button" = "Untertiteldatei importieren";
 "player.subtitle_import.footer" = "Importierte Untertitel werden für diesen Titel gespeichert und beim nächsten Abspielen automatisch geladen.";
 "player.subtitle_import.failed" = "Die Untertiteldatei konnte nicht importiert werden.";
+"player.audio_delay.section" = "Audio-Synchronisation";
+"player.audio_delay.label" = "Audioverzögerung";
+"player.audio_delay.footer" = "Positive Werte verzögern den Ton, negative spielen ihn früher ab. Hilfreich bei Bluetooth-Kopfhörern und Soundbars.";
 
 // MARK: - Player (overlay, tracks & subtitle appearance)
 "player.all_channels" = "Alle Kanäle";

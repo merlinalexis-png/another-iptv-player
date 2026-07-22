@@ -260,6 +260,9 @@
 "player.subtitle_import.button" = "Importar arquivo de legenda";
 "player.subtitle_import.footer" = "As legendas importadas são salvas para este título e carregadas automaticamente na próxima reprodução.";
 "player.subtitle_import.failed" = "Não foi possível importar o arquivo de legenda.";
+"player.audio_delay.section" = "Sincronização de áudio";
+"player.audio_delay.label" = "Atraso de áudio";
+"player.audio_delay.footer" = "Valores positivos atrasam o áudio; negativos o adiantam. Útil com fones Bluetooth e soundbars.";
 
 // MARK: - Player (overlay, tracks & subtitle appearance)
 "player.all_channels" = "Todos os canais";

@@ -401,6 +401,7 @@ final class VideoPlayerController: ObservableObject {
     let saved = SubtitleAppearancePersistence.load()
     mpvEngine.applySubtitleAppearanceFromSettings(saved)
     mpvEngine.setSubDelay(seconds: saved.delaySeconds)
+    mpvEngine.setAudioDelay(seconds: AudioDelayPersistence.load())
   }
 
   func setupAudioSession() {
@@ -621,6 +622,11 @@ final class VideoPlayerController: ObservableObject {
 
   func applySubtitleDelaySeconds(_ seconds: Double) {
     mpvEngine.setSubDelay(seconds: seconds)
+  }
+
+  func applyAudioDelaySeconds(_ seconds: Double) {
+    AudioDelayPersistence.save(seconds)
+    mpvEngine.setAudioDelay(seconds: seconds)
   }
 
   func teardown() {

@@ -260,6 +260,9 @@
 "player.subtitle_import.button" = "استيراد ملف ترجمة";
 "player.subtitle_import.footer" = "تُحفظ الترجمات المستوردة لهذا العنوان وتُحمَّل تلقائيًا عند التشغيل التالي.";
 "player.subtitle_import.failed" = "تعذّر استيراد ملف الترجمة.";
+"player.audio_delay.section" = "مزامنة الصوت";
+"player.audio_delay.label" = "تأخير الصوت";
+"player.audio_delay.footer" = "القيم الموجبة تؤخّر الصوت، والقيم السالبة تقدّمه. مفيد مع سماعات البلوتوث ومكبرات الصوت.";
 
 // MARK: - Player (overlay, tracks & subtitle appearance)
 "player.all_channels" = "كل القنوات";

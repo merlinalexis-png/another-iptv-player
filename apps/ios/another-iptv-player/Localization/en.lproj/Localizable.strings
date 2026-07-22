@@ -258,6 +258,9 @@
 "player.subtitle_import.button" = "Import Subtitle File";
 "player.subtitle_import.footer" = "Imported subtitles are saved for this title and load automatically the next time you play it.";
 "player.subtitle_import.failed" = "The subtitle file could not be imported.";
+"player.audio_delay.section" = "Audio Sync";
+"player.audio_delay.label" = "Audio delay";
+"player.audio_delay.footer" = "Positive values delay the audio; negative values play it earlier. Helps with Bluetooth headphones and soundbars.";
 "player.buffering" = "Buffering";
 "player.ended" = "Ended";
 

@@ -11,6 +11,7 @@ struct PlaybackTrackSettingsSheet: View {
     @State private var copyResetTask: Task<Void, Never>?
     @State private var showSubtitleImporter = false
     @State private var showSubtitleImportError = false
+    @State private var audioDelaySeconds = AudioDelayPersistence.load()
 
     private static let subtitleContentTypes: [UTType] =
         ["srt", "ass", "ssa", "vtt", "sub", "smi"].compactMap { UTType(filenameExtension: $0) }
@@ -32,6 +33,7 @@ struct PlaybackTrackSettingsSheet: View {
                     emptyLabel: L("player.tracks.empty.audio"),
                     select: { player.selectAudioTrack(id: $0) }
                 )
+                audioDelaySection
                 trackSection(
                     title: L("player.tracks.subtitle"),
                     items: player.subtitleTracks,
@@ -75,6 +77,9 @@ struct PlaybackTrackSettingsSheet: View {
         }
         .onAppear { player.updateTracks() }
         .onDisappear { copyResetTask?.cancel() }
+        .onChange(of: audioDelaySeconds) { _, new in
+            player.applyAudioDelaySeconds(new)
+        }
         .fileImporter(
             isPresented: $showSubtitleImporter,
             allowedContentTypes: Self.subtitleContentTypes,
@@ -114,6 +119,37 @@ struct PlaybackTrackSettingsSheet: View {
         } footer: {
             Text(L("player.subtitle_import.footer"))
         }
+    }
+
+    private var audioDelaySection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(L("player.audio_delay.label"))
+                        .font(.subheadline.weight(.medium))
+                    Spacer()
+                    Text(audioDelayDisplay)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Slider(
+                    value: $audioDelaySeconds,
+                    in: AudioDelayPersistence.range,
+                    step: AudioDelayPersistence.step
+                )
+            }
+            .padding(.vertical, 4)
+        } header: {
+            Text(L("player.audio_delay.section"))
+        } footer: {
+            Text(L("player.audio_delay.footer"))
+        }
+    }
+
+    private var audioDelayDisplay: String {
+        let ms = Int((audioDelaySeconds * 1000).rounded())
+        if ms == 0 { return L("subtitle.no_delay") }
+        return ms > 0 ? "+\(ms) ms" : "\(ms) ms"
     }
 
     private func copyStreamURL() {

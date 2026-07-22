@@ -260,6 +260,9 @@
 "player.subtitle_import.button" = "Importer un fichier de sous-titres";
 "player.subtitle_import.footer" = "Les sous-titres importés sont enregistrés pour ce titre et chargés automatiquement à la prochaine lecture.";
 "player.subtitle_import.failed" = "Le fichier de sous-titres n'a pas pu être importé.";
+"player.audio_delay.section" = "Synchronisation audio";
+"player.audio_delay.label" = "Décalage audio";
+"player.audio_delay.footer" = "Les valeurs positives retardent l'audio ; les négatives l'avancent. Utile avec les casques Bluetooth et les barres de son.";
 
 // MARK: - Player (overlay, tracks & subtitle appearance)
 "player.all_channels" = "Toutes les chaînes";

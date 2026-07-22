@@ -260,6 +260,9 @@
 "player.subtitle_import.button" = "सबटाइटल फ़ाइल आयात करें";
 "player.subtitle_import.footer" = "आयात किए गए सबटाइटल इस शीर्षक के लिए सहेजे जाते हैं और अगली बार चलाने पर अपने आप लोड हो जाते हैं।";
 "player.subtitle_import.failed" = "सबटाइटल फ़ाइल आयात नहीं की जा सकी।";
+"player.audio_delay.section" = "ऑडियो सिंक";
+"player.audio_delay.label" = "ऑडियो विलंब";
+"player.audio_delay.footer" = "धनात्मक मान ऑडियो में देरी करते हैं; ऋणात्मक मान उसे पहले चलाते हैं। ब्लूटूथ हेडफ़ोन और साउंडबार के लिए उपयोगी।";
 
 // MARK: - Player (overlay, tracks & subtitle appearance)
 "player.all_channels" = "सभी चैनल";

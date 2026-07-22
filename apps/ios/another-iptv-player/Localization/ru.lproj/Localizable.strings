@@ -260,6 +260,9 @@
 "player.subtitle_import.button" = "Импортировать файл субтитров";
 "player.subtitle_import.footer" = "Импортированные субтитры сохраняются для этого видео и автоматически загружаются при следующем воспроизведении.";
 "player.subtitle_import.failed" = "Не удалось импортировать файл субтитров.";
+"player.audio_delay.section" = "Синхронизация звука";
+"player.audio_delay.label" = "Задержка звука";
+"player.audio_delay.footer" = "Положительные значения задерживают звук, отрицательные — воспроизводят его раньше. Полезно для Bluetooth-наушников и саундбаров.";
 
 // MARK: - Player (overlay, tracks & subtitle appearance)
 "player.all_channels" = "Все каналы";

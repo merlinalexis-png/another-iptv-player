@@ -1145,6 +1145,13 @@ extension MPVPlayer {
     }
   }
 
+  func setAudioDelay(seconds: Double) {
+    mpvQueue.async { [weak self] in
+      guard let self, let handle = self.mpv, !self.isDisposed else { return }
+      MPVHelpers.setPropertyStringIfSupported(handle, name: "audio-delay", value: String(seconds))
+    }
+  }
+
   func applySubtitleAppearanceFromSettings(_ settings: SubtitleAppearanceSettings) {
     mpvQueue.async { [weak self] in
       guard let self, let handle = self.mpv, !self.isDisposed else { return }
