@@ -109,6 +109,7 @@ private final class MediaKitCenterPanel: UIView, UIGestureRecognizerDelegate {
   private let showTap = UITapGestureRecognizer()
   private let hideTap = UITapGestureRecognizer()
   private let speedHold = UILongPressGestureRecognizer()
+  private var controlsVisible = true
 
   override init(frame: CGRect) {
     super.init(frame: .zero)
@@ -144,6 +145,7 @@ private final class MediaKitCenterPanel: UIView, UIGestureRecognizerDelegate {
   }
 
   func configureRecognizers(showControls: Bool, enableSpeedHold: Bool, isSpeedHoldActive: Bool) {
+    controlsVisible = showControls
     showTap.isEnabled = !showControls && !isSpeedHoldActive
     hideTap.isEnabled = showControls && !isSpeedHoldActive
     speedHold.isEnabled = enableSpeedHold
@@ -161,6 +163,10 @@ private final class MediaKitCenterPanel: UIView, UIGestureRecognizerDelegate {
     _ gestureRecognizer: UIGestureRecognizer,
     shouldReceive touch: UITouch
   ) -> Bool {
+    // The edge sliders only exist while the chrome is visible; with controls hidden
+    // the strips must stay touchable, otherwise long-press 2x and tap-to-show-chrome
+    // silently dead-zone ~55% of an iPhone portrait screen.
+    guard controlsVisible else { return true }
     let x = touch.location(in: self).x
     if x <= Self.edgeSliderStripWidth || x >= bounds.width - Self.edgeSliderStripWidth {
       return false
