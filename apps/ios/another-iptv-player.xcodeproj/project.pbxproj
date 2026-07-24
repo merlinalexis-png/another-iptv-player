@@ -16,6 +16,11 @@
 		D76253C12F85052600E30229 /* GRDBQuery in Frameworks */ = {isa = PBXBuildFile; productRef = E8A1F0022F85000100AAA002 /* GRDBQuery */; };
 		D76253C22F85052600E30229 /* Nuke in Frameworks */ = {isa = PBXBuildFile; productRef = E8A1F0022F85000100AAA003 /* Nuke */; };
 		D76253C32F85052600E30229 /* NukeUI in Frameworks */ = {isa = PBXBuildFile; productRef = E8A1F0022F85000100AAA004 /* NukeUI */; };
+		D76253C42F85052600E30229 /* KSPlayer in Frameworks */ = {isa = PBXBuildFile; productRef = E8A1F0022F85000100AAA005 /* KSPlayer */; };
+		D76253C52F85052600E30229 /* Libavformat in Frameworks */ = {isa = PBXBuildFile; productRef = E8A1F0022F85000100AAA006 /* Libavformat */; };
+		D76253C62F85052600E30229 /* Libavutil in Frameworks */ = {isa = PBXBuildFile; productRef = E8A1F0022F85000100AAA007 /* Libavutil */; };
+		D76253C72F85052600E30229 /* Libavcodec in Frameworks */ = {isa = PBXBuildFile; productRef = E8A1F0022F85000100AAA008 /* Libavcodec */; };
+		D76253C82F85052600E30229 /* Libswresample in Frameworks */ = {isa = PBXBuildFile; productRef = E8A1F0022F85000100AAA009 /* Libswresample */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -44,24 +49,6 @@
 		AAAA000000000000000000B3 /* ScreensUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ScreensUITests.swift; sourceTree = "<group>"; };
 		C041D5956145665A6D10DB07 /* SnapshotHelper.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SnapshotHelper.swift; sourceTree = "<group>"; };
 		D713CDA92F82DC8A00C6BEFF /* another-iptv-player.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "another-iptv-player.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		D749AE832FBFDAA600312016 /* Avformat.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Avformat.xcframework; path = Vendor/libmpv/Frameworks/Avformat.xcframework; sourceTree = "<group>"; };
-		D749AE842FBFDAA600312016 /* Dav1d.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Dav1d.xcframework; path = Vendor/libmpv/Frameworks/Dav1d.xcframework; sourceTree = "<group>"; };
-		D749AE852FBFDAA600312016 /* Harfbuzz.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Harfbuzz.xcframework; path = Vendor/libmpv/Frameworks/Harfbuzz.xcframework; sourceTree = "<group>"; };
-		D749AE862FBFDAA600312016 /* Swresample.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Swresample.xcframework; path = Vendor/libmpv/Frameworks/Swresample.xcframework; sourceTree = "<group>"; };
-		D749AE872FBFDAA600312016 /* Mpv.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Mpv.xcframework; path = Vendor/libmpv/Frameworks/Mpv.xcframework; sourceTree = "<group>"; };
-		D749AE882FBFDAA600312016 /* Ass.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Ass.xcframework; path = Vendor/libmpv/Frameworks/Ass.xcframework; sourceTree = "<group>"; };
-		D749AE892FBFDAA600312016 /* Xml2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Xml2.xcframework; path = Vendor/libmpv/Frameworks/Xml2.xcframework; sourceTree = "<group>"; };
-		D749AE8A2FBFDAA600312016 /* Avcodec.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Avcodec.xcframework; path = Vendor/libmpv/Frameworks/Avcodec.xcframework; sourceTree = "<group>"; };
-		D749AE8B2FBFDAA600312016 /* Mbedcrypto.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Mbedcrypto.xcframework; path = Vendor/libmpv/Frameworks/Mbedcrypto.xcframework; sourceTree = "<group>"; };
-		D749AE8C2FBFDAA600312016 /* Fribidi.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Fribidi.xcframework; path = Vendor/libmpv/Frameworks/Fribidi.xcframework; sourceTree = "<group>"; };
-		D749AE8D2FBFDAA600312016 /* Mbedtls.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Mbedtls.xcframework; path = Vendor/libmpv/Frameworks/Mbedtls.xcframework; sourceTree = "<group>"; };
-		D749AE8E2FBFDAA600312016 /* Swscale.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Swscale.xcframework; path = Vendor/libmpv/Frameworks/Swscale.xcframework; sourceTree = "<group>"; };
-		D749AE8F2FBFDAA600312016 /* Avutil.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Avutil.xcframework; path = Vendor/libmpv/Frameworks/Avutil.xcframework; sourceTree = "<group>"; };
-		D749AE902FBFDAA600312016 /* Freetype.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Freetype.xcframework; path = Vendor/libmpv/Frameworks/Freetype.xcframework; sourceTree = "<group>"; };
-		D749AE912FBFDAA600312016 /* Uchardet.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Uchardet.xcframework; path = Vendor/libmpv/Frameworks/Uchardet.xcframework; sourceTree = "<group>"; };
-		D749AE922FBFDAA600312016 /* Avfilter.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Avfilter.xcframework; path = Vendor/libmpv/Frameworks/Avfilter.xcframework; sourceTree = "<group>"; };
-		D749AE932FBFDAA600312016 /* Png16.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Png16.xcframework; path = Vendor/libmpv/Frameworks/Png16.xcframework; sourceTree = "<group>"; };
-		D749AE942FBFDAA600312016 /* Mbedx509.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Mbedx509.xcframework; path = Vendor/libmpv/Frameworks/Mbedx509.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -90,6 +77,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				D76253C32F85052600E30229 /* NukeUI in Frameworks */,
+				D76253C42F85052600E30229 /* KSPlayer in Frameworks */,
+				D76253C52F85052600E30229 /* Libavformat in Frameworks */,
+				D76253C62F85052600E30229 /* Libavutil in Frameworks */,
+				D76253C72F85052600E30229 /* Libavcodec in Frameworks */,
+				D76253C82F85052600E30229 /* Libswresample in Frameworks */,
 				D76253C22F85052600E30229 /* Nuke in Frameworks */,
 				D76253C12F85052600E30229 /* GRDBQuery in Frameworks */,
 				D76253C02F85052600E30229 /* GRDB in Frameworks */,
@@ -150,24 +142,6 @@
 		D749AE822FBFDAA600312016 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				D749AE882FBFDAA600312016 /* Ass.xcframework */,
-				D749AE8A2FBFDAA600312016 /* Avcodec.xcframework */,
-				D749AE922FBFDAA600312016 /* Avfilter.xcframework */,
-				D749AE832FBFDAA600312016 /* Avformat.xcframework */,
-				D749AE8F2FBFDAA600312016 /* Avutil.xcframework */,
-				D749AE842FBFDAA600312016 /* Dav1d.xcframework */,
-				D749AE902FBFDAA600312016 /* Freetype.xcframework */,
-				D749AE8C2FBFDAA600312016 /* Fribidi.xcframework */,
-				D749AE852FBFDAA600312016 /* Harfbuzz.xcframework */,
-				D749AE8B2FBFDAA600312016 /* Mbedcrypto.xcframework */,
-				D749AE8D2FBFDAA600312016 /* Mbedtls.xcframework */,
-				D749AE942FBFDAA600312016 /* Mbedx509.xcframework */,
-				D749AE872FBFDAA600312016 /* Mpv.xcframework */,
-				D749AE932FBFDAA600312016 /* Png16.xcframework */,
-				D749AE862FBFDAA600312016 /* Swresample.xcframework */,
-				D749AE8E2FBFDAA600312016 /* Swscale.xcframework */,
-				D749AE912FBFDAA600312016 /* Uchardet.xcframework */,
-				D749AE892FBFDAA600312016 /* Xml2.xcframework */,
 				C40542286742DCB9DECF380D /* iOS */,
 			);
 			name = Frameworks;
@@ -219,11 +193,9 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = D713CDB42F82DC8B00C6BEFF /* Build configuration list for PBXNativeTarget "another-iptv-player" */;
 			buildPhases = (
-				D749AEBA2FBFDD5C00312016 /* Prepare libmpv link paths */,
 				D713CDA52F82DC8A00C6BEFF /* Sources */,
 				D713CDA62F82DC8A00C6BEFF /* Frameworks */,
 				D713CDA72F82DC8A00C6BEFF /* Resources */,
-				D749AEBB2FBFDDAB00312016 /* Embed libmpv frameworks */,
 			);
 			buildRules = (
 			);
@@ -284,6 +256,8 @@
 				D7D9FD5C2F83BAC300ABA757 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 				D7D9FD5F2F83BAED00ABA757 /* XCRemoteSwiftPackageReference "GRDBQuery" */,
 				D7262AD82F840A6C0093E87D /* XCRemoteSwiftPackageReference "Nuke" */,
+				D7262AD92F840A6C0093E87D /* XCRemoteSwiftPackageReference "KSPlayer" */,
+				D7262ADA2F840A6C0093E87D /* XCRemoteSwiftPackageReference "FFmpegKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D713CDAA2F82DC8A00C6BEFF /* Products */;
@@ -320,45 +294,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
-
-/* Begin PBXShellScriptBuildPhase section */
-		D749AEBA2FBFDD5C00312016 /* Prepare libmpv link paths */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Prepare libmpv link paths";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${SRCROOT}/another-iptv-player/scripts/prepare_libmpv_link_paths.sh\"\n";
-		};
-		D749AEBB2FBFDDAB00312016 /* Embed libmpv frameworks */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Embed libmpv frameworks";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${SRCROOT}/another-iptv-player/scripts/embed_libmpv_frameworks.sh\"\n";
-		};
-/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		08F9928E998C48384BA05255 /* Sources */ = {
@@ -448,7 +383,6 @@
 				DEVELOPMENT_TEAM = RJF8BC3HBY;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "$(SRCROOT)/Vendor/mpv-headers";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "dev.ogos.another-iptv-playerTests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -471,7 +405,6 @@
 				DEVELOPMENT_TEAM = RJF8BC3HBY;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "$(SRCROOT)/Vendor/mpv-headers";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "dev.ogos.another-iptv-playerTests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -617,13 +550,11 @@
 				DEVELOPMENT_TEAM = RJF8BC3HBY;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				FRAMEWORK_SEARCH_PATHS = "$(SRCROOT)/Vendor/libmpv/LinkStaging/$(PLATFORM_NAME)";
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
 					"GLES_SILENCE_DEPRECATION=1",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "$(SRCROOT)/Vendor/mpv-headers";
 				INFOPLIST_FILE = "App-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Another IPTV Player";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
@@ -638,17 +569,12 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 2.3.0;
-				OTHER_LDFLAGS = (
-					"-framework",
-					Mpv,
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = "dev.ogos.another-iptv-player";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "another-iptv-player/another-iptv-player-Bridging-Header.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -665,13 +591,11 @@
 				DEVELOPMENT_TEAM = RJF8BC3HBY;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				FRAMEWORK_SEARCH_PATHS = "$(SRCROOT)/Vendor/libmpv/LinkStaging/$(PLATFORM_NAME)";
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
 					"GLES_SILENCE_DEPRECATION=1",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "$(SRCROOT)/Vendor/mpv-headers";
 				INFOPLIST_FILE = "App-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Another IPTV Player";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
@@ -686,17 +610,12 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 2.3.0;
-				OTHER_LDFLAGS = (
-					"-framework",
-					Mpv,
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = "dev.ogos.another-iptv-player";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "another-iptv-player/another-iptv-player-Bridging-Header.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -753,6 +672,22 @@
 				minimumVersion = 13.0.1;
 			};
 		};
+		D7262AD92F840A6C0093E87D /* XCRemoteSwiftPackageReference "KSPlayer" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/kingslay/KSPlayer.git";
+			requirement = {
+				kind = revision;
+				revision = 3d38b7c3148135b319439d4ff60bb426e6414225;
+			};
+		};
+		D7262ADA2F840A6C0093E87D /* XCRemoteSwiftPackageReference "FFmpegKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/kingslay/FFmpegKit.git";
+			requirement = {
+				kind = exactVersion;
+				version = 6.1.4;
+			};
+		};
 		D7D9FD5C2F83BAC300ABA757 /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/groue/GRDB.swift.git";
@@ -791,6 +726,31 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D7262AD82F840A6C0093E87D /* XCRemoteSwiftPackageReference "Nuke" */;
 			productName = NukeUI;
+		};
+		E8A1F0022F85000100AAA005 /* KSPlayer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D7262AD92F840A6C0093E87D /* XCRemoteSwiftPackageReference "KSPlayer" */;
+			productName = KSPlayer;
+		};
+		E8A1F0022F85000100AAA006 /* Libavformat */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D7262ADA2F840A6C0093E87D /* XCRemoteSwiftPackageReference "FFmpegKit" */;
+			productName = Libavformat;
+		};
+		E8A1F0022F85000100AAA007 /* Libavutil */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D7262ADA2F840A6C0093E87D /* XCRemoteSwiftPackageReference "FFmpegKit" */;
+			productName = Libavutil;
+		};
+		E8A1F0022F85000100AAA008 /* Libavcodec */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D7262ADA2F840A6C0093E87D /* XCRemoteSwiftPackageReference "FFmpegKit" */;
+			productName = Libavcodec;
+		};
+		E8A1F0022F85000100AAA009 /* Libswresample */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D7262ADA2F840A6C0093E87D /* XCRemoteSwiftPackageReference "FFmpegKit" */;
+			productName = Libswresample;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

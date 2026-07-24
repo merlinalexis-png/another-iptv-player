@@ -314,6 +314,9 @@ struct PlaylistSettingsView: View {
                     }
                 }
 
+                // — EPG (TV Rehberi) —
+                XtreamEPGSettingsSection(playlist: playlist)
+
                 // — İçerik Yönetimi —
                 Section(header: Text(L("settings.content_management.title"))) {
                     Toggle(isOn: $filterAdultContent) {
@@ -449,6 +452,14 @@ struct PlaylistSettingsView: View {
             await MainActor.run {
                 self.authResponse = response
                 self.isLoading = false
+            }
+            // Refresh the cached panel timezone (used for timeshift start-time
+            // conversion) whenever it changed.
+            if let tz = response.serverInfo?.timezone?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !tz.isEmpty, tz != playlist.serverTimezone {
+                var updated = playlist
+                updated.serverTimezone = tz
+                try? await AppDatabase.shared.write { db in try updated.save(db) }
             }
         } catch {
             await MainActor.run {

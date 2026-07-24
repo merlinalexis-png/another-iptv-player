@@ -20,9 +20,14 @@ struct DBLiveStream: Identifiable, Codable, FetchableRecord, PersistableRecord, 
     var categoryId: String?
     var sortIndex: Int = 0
     var playlistId: UUID
-    
+    /// Catch-up: 1 when the channel has a timeshift archive. Duration in days.
+    /// Defaulted so existing labeled-arg construction sites keep compiling; the
+    /// real values are populated on the next live catalog refresh.
+    var tvArchive: Int = 0
+    var tvArchiveDuration: Int = 0
+
     var id: String { "\(streamId)_\(playlistId)" }
-    
+
     static let databaseTableName = "liveStream"
 }
 
@@ -147,6 +152,11 @@ struct DBM3UChannel: Identifiable, Codable, FetchableRecord, PersistableRecord, 
     var groupTitle: String?
     var userAgent: String?
     var sortIndex: Int = 0
+    /// M3U catch-up attributes — parsed and persisted now for schema stability;
+    /// M3U catch-up playback is deferred (Xtream catch-up ships first).
+    var catchup: String?
+    var catchupSource: String?
+    var catchupDays: Int?
 
     static let databaseTableName = "m3uChannel"
 }

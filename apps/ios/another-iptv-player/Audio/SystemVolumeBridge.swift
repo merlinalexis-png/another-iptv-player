@@ -3,7 +3,7 @@ import Combine
 import MediaPlayer
 import SwiftUI
 import UIKit
-
+    
 /// Donanım / Kontrol Merkezi ile aynı sistem çıkış sesi (`MPVolumeView` iç `UISlider`).
 final class SystemVolumeBridge: NSObject, ObservableObject {
   @Published private(set) var outputVolume: Float

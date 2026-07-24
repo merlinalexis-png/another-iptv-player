@@ -12,6 +12,11 @@ struct ParsedM3UChannel: Equatable, Sendable {
     var tvgCountry: String?
     var groupTitle: String?
     var userAgent: String?
+    /// Catch-up attributes. Parsed and persisted for schema stability; M3U
+    /// catch-up playback is deferred (Xtream catch-up ships first).
+    var catchup: String?
+    var catchupSource: String?
+    var catchupDays: Int?
 }
 
 struct ParsedM3UPlaylist: Equatable, Sendable {
@@ -540,7 +545,11 @@ enum M3UParser {
             tvgLogo: attrs["tvg-logo"],
             tvgCountry: attrs["tvg-country"],
             groupTitle: attrs["group-title"],
-            userAgent: attrs["user-agent"]
+            userAgent: attrs["user-agent"],
+            // `catchup-type` is the common alias some providers emit instead of `catchup`.
+            catchup: attrs["catchup"] ?? attrs["catchup-type"],
+            catchupSource: attrs["catchup-source"],
+            catchupDays: attrs["catchup-days"].flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
         )
     }
 

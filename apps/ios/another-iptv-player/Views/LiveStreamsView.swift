@@ -92,6 +92,15 @@ struct LiveStreamsView: View {
         .task(id: hiddenStore.hiddenIds(playlistId: playlist.id, type: "live")) { await recomputeFilter() }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
+                NavigationLink {
+                    EPGGuideView(source: .xtream(playlist))
+                } label: {
+                    Image(systemName: "calendar.day.timeline.left")
+                        .font(.body.weight(.semibold))
+                }
+                .accessibilityLabel(L("epg.guide.title"))
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     showingCategoryPicker = true
                 } label: {
@@ -208,7 +217,7 @@ struct LiveStreamsView: View {
                 // edebiliyor; iptal child URLSession isteklerine yayılıp "cancelled"
                 // hatası üretiyordu. Bağımsız Task iptalden etkilenmez; await task.value
                 // spinner'ı iş bitene dek tutar.
-                let work = Task { await contentStore.refreshFromNetwork(playlist: playlist) }
+                let work = Task { await contentStore.refreshFromNetwork(playlist: playlist, only: .live) }
                 await work.value
             }
             .onChange(of: pendingScrollTarget) { _, target in
@@ -384,6 +393,8 @@ struct LiveStreamCard: View {
     var imageLoadProfile: ImageLoadProfile = .standard
     var onStreamSelected: ((DBLiveStream, DBWatchHistory?) -> Void)? = nil
 
+    @Environment(\.epgSnapshot) private var epgSnapshot
+
     var body: some View {
         Button(action: {
             onStreamSelected?(stream, nil)
@@ -405,6 +416,11 @@ struct LiveStreamCard: View {
                     .multilineTextAlignment(.center)
                     .frame(width: width)
                     .foregroundColor(.primary)
+
+                if let snapshot = epgSnapshot {
+                    EPGNowNextLine(nowNext: snapshot[EPGChannelKey.forXtream(stream)],
+                                   width: width, reserveSpace: true)
+                }
             }
         }
         .buttonStyle(.plain)
@@ -537,10 +553,13 @@ struct LivePlayerShell: View {
     let queue: [DBLiveStream]
     let sections: [LiveChannelCategorySection]
     let subtitle: String?
+    private let initialStream: DBLiveStream
+    private let initialHistory: DBWatchHistory?
 
     @State private var session: LivePlaybackSession
-    /// Panel durumu `PlayerView`'ın `.id(session.instanceId)` yenilenmesinden etkilenmesin diye burada tutulur.
     @State private var showChannelSidePanel: Bool = false
+    @State private var isFavorite = false
+    @Environment(\.playerOverlayPresentationID) private var overlayPresentationID
 
     init(
         playlist: Playlist,
@@ -554,6 +573,8 @@ struct LivePlayerShell: View {
         self.queue = queue
         self.sections = sections
         self.subtitle = subtitle
+        self.initialStream = initialStream
+        self.initialHistory = initialHistory
         // Sections shell ömrü boyunca değişmez; her body değerlendirmesinde (kanal zap,
         // panel aç/kapa) on binlerce kanalı yeniden map'lemek yerine bir kez kur.
         self.panelSections = sections.map { section in
@@ -573,8 +594,7 @@ struct LivePlayerShell: View {
         _session = State(initialValue: LivePlaybackSession(
             stream: initialStream,
             url: initialURL,
-            resumeTimeMs: initialHistory?.lastTimeMs,
-            instanceId: UUID()
+            resumeTimeMs: initialHistory?.lastTimeMs
         ))
     }
 
@@ -582,49 +602,59 @@ struct LivePlayerShell: View {
         queue.firstIndex(where: { $0.streamId == session.stream.streamId })
     }
 
+    /// Category name of the channel on screen, shown under the title. Derived from the
+    /// current stream so it updates on zap, and never echoes the channel name itself.
+    private var liveSubtitle: String? {
+        if let categoryId = session.stream.categoryId,
+           let name = PlaylistContentStore.shared.liveCategories.first(where: { $0.id == categoryId })?.name,
+           !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return name
+        }
+        if let subtitle, subtitle != session.stream.name { return subtitle }
+        return nil
+    }
+
     private let panelSections: [ChannelPanelSection]
 
     var body: some View {
         if let url = session.url {
             ZStack(alignment: .bottom) {
-                LiveFavoriteHost(streamId: session.stream.streamId, playlistId: playlist.id) { isFavorite, toggleFavorite in
-                    PlayerView(
-                        url: url,
-                        title: session.stream.name,
-                        subtitle: subtitle,
-                        artworkURL: session.stream.streamIcon.flatMap { URL(string: $0) },
-                        isLiveStream: true,
-                        playlistId: playlist.id,
-                        streamId: String(session.stream.streamId),
-                        type: "live",
-                        resumeTimeMs: session.resumeTimeMs,
-                        canGoToPreviousChannel: (currentIndex ?? 0) > 0,
-                        canGoToNextChannel: {
-                            guard let index = currentIndex else { return false }
-                            return index < queue.count - 1
-                        }(),
-                        onPreviousChannel: { jump(offset: -1) },
-                        onNextChannel: { jump(offset: 1) },
-                        channelPanelSections: panelSections,
-                        currentChannelPanelItemId: String(session.stream.streamId),
-                        onSelectChannelPanelItem: { id in selectPanelItem(id: id) },
-                        isLiveChannelSidePanelVisible: showChannelSidePanel,
-                        onToggleLiveChannelSidePanel: {
-                            withAnimation(.easeInOut(duration: 0.22)) {
-                                showChannelSidePanel.toggle()
-                            }
-                        },
-                        onVideoSurfaceTap: {
-                            guard showChannelSidePanel else { return }
-                            withAnimation(.easeInOut(duration: 0.22)) {
-                                showChannelSidePanel = false
-                            }
-                        },
-                        isFavorite: isFavorite,
-                        onToggleFavorite: toggleFavorite
-                    )
-                }
-                .id(session.instanceId)
+                PlayerView(
+                    url: url,
+                    title: session.stream.name,
+                    subtitle: liveSubtitle,
+                    artworkURL: session.stream.streamIcon.flatMap { URL(string: $0) },
+                    isLiveStream: true,
+                    playlistId: playlist.id,
+                    streamId: String(session.stream.streamId),
+                    type: "live",
+                    resumeTimeMs: session.resumeTimeMs,
+                    epgChannelKey: EPGChannelKey.forXtream(session.stream),
+                    canGoToPreviousChannel: (currentIndex ?? 0) > 0,
+                    canGoToNextChannel: {
+                        guard let index = currentIndex else { return false }
+                        return index < queue.count - 1
+                    }(),
+                    onPreviousChannel: { jump(offset: -1) },
+                    onNextChannel: { jump(offset: 1) },
+                    channelPanelSections: panelSections,
+                    currentChannelPanelItemId: String(session.stream.streamId),
+                    onSelectChannelPanelItem: { id in selectPanelItem(id: id) },
+                    isLiveChannelSidePanelVisible: showChannelSidePanel,
+                    onToggleLiveChannelSidePanel: {
+                        withAnimation(.easeInOut(duration: 0.22)) {
+                            showChannelSidePanel.toggle()
+                        }
+                    },
+                    onVideoSurfaceTap: {
+                        guard showChannelSidePanel else { return }
+                        withAnimation(.easeInOut(duration: 0.22)) {
+                            showChannelSidePanel = false
+                        }
+                    },
+                    isFavorite: isFavorite,
+                    onToggleFavorite: toggleFavorite
+                )
 
                 if showChannelSidePanel, !sections.isEmpty {
                     LiveChannelSidePanel(
@@ -636,6 +666,30 @@ struct LivePlayerShell: View {
                     .zIndex(1)
                 }
             }
+            .task(id: "\(playlist.id.uuidString)-\(session.stream.streamId)") {
+                await refreshFavorite()
+            }
+            .onChange(of: overlayPresentationID) { _, _ in
+                applyInitialSelectionIfNeeded()
+            }
+        }
+    }
+
+    private func applyInitialSelectionIfNeeded() {
+        let targetURL = PlaybackURLBuilder(playlist: playlist).liveURL(streamId: initialStream.streamId)
+        let targetResume = initialHistory?.lastTimeMs
+        guard session.stream.streamId != initialStream.streamId
+                || session.url != targetURL
+                || session.resumeTimeMs != targetResume else { return }
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        withTransaction(tx) {
+            showChannelSidePanel = false
+            session = LivePlaybackSession(
+                stream: initialStream,
+                url: targetURL,
+                resumeTimeMs: targetResume
+            )
         }
     }
 
@@ -665,10 +719,46 @@ struct LivePlayerShell: View {
             session = LivePlaybackSession(
                 stream: stream,
                 url: targetURL,
-                resumeTimeMs: resumeTimeMs,
-                // Kanal değişiminde yeni PlayerView/VideoPlayerController/MPVPlayer zinciri oluştur.
-                instanceId: UUID()
+                resumeTimeMs: resumeTimeMs
             )
+        }
+    }
+
+    private func refreshFavorite() async {
+        let streamId = session.stream.streamId
+        let value = (try? await AppDatabase.shared.read { db in
+            try DBFavorite
+                .filter(Column("streamId") == streamId
+                    && Column("playlistId") == playlist.id
+                    && Column("type") == "live")
+                .fetchCount(db) > 0
+        }) ?? false
+        guard !Task.isCancelled, session.stream.streamId == streamId else { return }
+        isFavorite = value
+    }
+
+    private func toggleFavorite() {
+        let streamId = session.stream.streamId
+        let nextValue = !isFavorite
+        isFavorite = nextValue
+        Task {
+            do {
+                try await AppDatabase.shared.write { db in
+                    if nextValue {
+                        try DBFavorite(
+                            streamId: streamId, playlistId: playlist.id, type: "live"
+                        ).insert(db)
+                    } else {
+                        try DBFavorite
+                            .filter(Column("streamId") == streamId
+                                && Column("playlistId") == playlist.id
+                                && Column("type") == "live")
+                            .deleteAll(db)
+                    }
+                }
+            } catch {
+                if session.stream.streamId == streamId { isFavorite.toggle() }
+            }
         }
     }
 }
@@ -677,59 +767,4 @@ struct LivePlaybackSession: Equatable {
     var stream: DBLiveStream
     var url: URL?
     var resumeTimeMs: Int?
-    /// Her kanal geçişinde yeni `PlayerView` / `VideoPlayerController` örneği için SwiftUI kimliği.
-    var instanceId: UUID
-}
-
-/// Canlı TV oynatıcısına favori durumunu ve favori toggle aksiyonunu sağlar.
-/// `LivePlayerShell` bu view'ı `session.instanceId` ile kimliklendirdiği için
-/// kanal değiştiğinde doğru `streamId` ile yeni bir `IsFavoriteRequest` sorgusu açılır.
-private struct LiveFavoriteHost<Content: View>: View {
-    private let streamId: Int
-    private let playlistId: UUID
-    private let content: (Bool, @escaping () -> Void) -> Content
-
-    @Query<IsFavoriteRequest> private var isFavorite: Bool
-
-    init(
-        streamId: Int,
-        playlistId: UUID,
-        @ViewBuilder content: @escaping (Bool, @escaping () -> Void) -> Content
-    ) {
-        self.streamId = streamId
-        self.playlistId = playlistId
-        self.content = content
-        _isFavorite = Query(
-            IsFavoriteRequest(streamId: streamId, playlistId: playlistId, type: "live"),
-            in: \.appDatabase
-        )
-    }
-
-    var body: some View {
-        content(isFavorite, toggleFavorite)
-    }
-
-    private func toggleFavorite() {
-        let currentlyFavorite = isFavorite
-        let streamId = streamId
-        let playlistId = playlistId
-        Task {
-            do {
-                try await AppDatabase.shared.write { db in
-                    if currentlyFavorite {
-                        try DBFavorite
-                            .filter(Column("streamId") == streamId
-                                && Column("playlistId") == playlistId
-                                && Column("type") == "live")
-                            .deleteAll(db)
-                    } else {
-                        try DBFavorite(streamId: streamId, playlistId: playlistId, type: "live")
-                            .insert(db)
-                    }
-                }
-            } catch {
-                print("Failed to toggle live favorite: \(error)")
-            }
-        }
-    }
 }

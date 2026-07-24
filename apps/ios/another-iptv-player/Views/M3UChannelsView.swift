@@ -64,6 +64,15 @@ struct M3UChannelsView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 NavigationLink {
+                    EPGGuideView(source: .m3u(playlist))
+                } label: {
+                    Image(systemName: "calendar.day.timeline.left")
+                        .font(.body.weight(.semibold))
+                }
+                .accessibilityLabel(L("epg.guide.title"))
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                NavigationLink {
                     M3UFavoritesView(playlist: playlist)
                 } label: {
                     Image(systemName: "star.fill")
@@ -401,6 +410,8 @@ struct M3UChannelCard: View {
     var imageLoadProfile: ImageLoadProfile = .standard
     var onChannelSelected: ((DBM3UChannel) -> Void)? = nil
 
+    @Environment(\.epgSnapshot) private var epgSnapshot
+
     var body: some View {
         Button {
             onChannelSelected?(channel)
@@ -422,6 +433,11 @@ struct M3UChannelCard: View {
                     .multilineTextAlignment(.center)
                     .frame(width: width)
                     .foregroundColor(.primary)
+
+                if let snapshot = epgSnapshot {
+                    EPGNowNextLine(nowNext: snapshot[EPGChannelKey.forM3U(channel)],
+                                   width: width, reserveSpace: true)
+                }
             }
         }
         .buttonStyle(.plain)
@@ -584,14 +600,17 @@ struct M3UGroupGridContent: View {
 struct M3UPlayerShell: View {
     let playlist: Playlist
     let initialResumeMs: Int?
+    private let initialChannel: DBM3UChannel
+    private let initialQueue: [DBM3UChannel]
     /// Panelden başka bir kategoriye geçiş yapıldığında queue yeniden üretildiği için `@State`.
     @State private var queue: [DBM3UChannel]
     /// Playlist'in tüm canlı kanallarından (store yüklüyse) veya queue'dan (fallback) türetilen panel modeli.
     /// `.task(id:)` içinde, off-main hesaplanıp cache'lenir — body her render olduğunda yeniden üretilmez.
     @State private var livePanelSections: [ChannelPanelSection] = []
     @State private var currentIndex: Int
-    @State private var hasConsumedResume: Bool = false
+    @State private var resumeTimeMs: Int?
     @State private var showChannelSidePanel: Bool = false
+    @Environment(\.playerOverlayPresentationID) private var overlayPresentationID
     @ObservedObject private var favorites = M3UFavoriteStore.shared
     @ObservedObject private var m3uStore = M3UContentStore.shared
     @ObservedObject private var hiddenStore = HiddenCategoryStore.shared
@@ -604,13 +623,20 @@ struct M3UPlayerShell: View {
     ) {
         self.playlist = playlist
         self.initialResumeMs = resumeTimeMs
+        self.initialChannel = channel
+        let resolvedQueue: [DBM3UChannel]
+        let resolvedIndex: Int
         if let idx = queue.firstIndex(where: { $0.id == channel.id }) {
-            _queue = State(initialValue: queue)
-            _currentIndex = State(initialValue: idx)
+            resolvedQueue = queue
+            resolvedIndex = idx
         } else {
-            _queue = State(initialValue: [channel])
-            _currentIndex = State(initialValue: 0)
+            resolvedQueue = [channel]
+            resolvedIndex = 0
         }
+        self.initialQueue = resolvedQueue
+        _queue = State(initialValue: resolvedQueue)
+        _currentIndex = State(initialValue: resolvedIndex)
+        _resumeTimeMs = State(initialValue: resumeTimeMs)
     }
 
     private var channel: DBM3UChannel { queue[currentIndex] }
@@ -634,8 +660,10 @@ struct M3UPlayerShell: View {
                     playlistId: playlist.id,
                     streamId: activeChannel.id,
                     type: classification.playbackType,
-                    resumeTimeMs: hasConsumedResume ? nil : initialResumeMs,
+                    resumeTimeMs: resumeTimeMs,
                     containerExtension: classification.containerExtension,
+                    userAgent: activeChannel.userAgent,
+                    epgChannelKey: classification.isLive ? EPGChannelKey.forM3U(activeChannel) : nil,
                     canGoToPreviousChannel: hasQueueNav && currentIndex > 0,
                     canGoToNextChannel: hasQueueNav && currentIndex < queue.count - 1,
                     onPreviousChannel: hasQueueNav ? { jump(offset: -1) } : nil,
@@ -660,8 +688,6 @@ struct M3UPlayerShell: View {
                         Task { await favorites.toggle(channel: activeChannel) }
                     }
                 )
-                .id(activeChannel.id)
-                .onAppear { hasConsumedResume = true }
 
                 if showChannelSidePanel, !panelSections.isEmpty {
                     LiveChannelSidePanel(
@@ -674,6 +700,24 @@ struct M3UPlayerShell: View {
                 }
             }
             .task(id: panelSectionsCacheKey) { await recomputeLivePanelSections() }
+            .onChange(of: overlayPresentationID) { _, _ in
+                applyInitialSelectionIfNeeded()
+            }
+        }
+    }
+
+    private func applyInitialSelectionIfNeeded() {
+        guard channel.id != initialChannel.id
+                || queue.map(\.id) != initialQueue.map(\.id)
+                || resumeTimeMs != initialResumeMs else { return }
+        guard let targetIndex = initialQueue.firstIndex(where: { $0.id == initialChannel.id }) else { return }
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        withTransaction(tx) {
+            showChannelSidePanel = false
+            queue = initialQueue
+            currentIndex = targetIndex
+            resumeTimeMs = initialResumeMs
         }
     }
 
@@ -711,11 +755,13 @@ struct M3UPlayerShell: View {
         let target = currentIndex + offset
         guard target >= 0, target < queue.count else { return }
         currentIndex = target
+        resumeTimeMs = nil
     }
 
     private func selectPanelItem(id: String) {
         if let idx = queue.firstIndex(where: { $0.id == id }) {
             currentIndex = idx
+            resumeTimeMs = nil
             return
         }
         // Farklı kategoriden seçim yapıldı — queue'yu o kategorinin kanallarından yeniden üret.
@@ -727,6 +773,7 @@ struct M3UPlayerShell: View {
         guard let newIdx = newQueue.firstIndex(where: { $0.id == id }) else { return }
         queue = newQueue
         currentIndex = newIdx
+        resumeTimeMs = nil
     }
 
     nonisolated private static func buildLivePanelSections(queue: [DBM3UChannel], ungroupedLabel: String) -> [ChannelPanelSection] {

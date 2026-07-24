@@ -1,6 +1,48 @@
 import SwiftUI
 import UIKit
 
+/// Gesture recognizers live below SwiftUI's edge sliders, so taps can leak through the
+/// transparent SwiftUI drag surface. Reject only the actual capsule frames; excluding a
+/// full-height edge strip creates large tap/long-press dead zones.
+struct PlayerEdgeSliderGestureExclusion {
+  static let hitSlop: CGFloat = 8
+
+  static func contains(
+    _ point: CGPoint,
+    in bounds: CGRect,
+    trackSize: CGSize,
+    leadingInset: CGFloat,
+    trailingInset: CGFloat
+  ) -> Bool {
+    guard bounds.width > 0, bounds.height > 0,
+          trackSize.width > 0, trackSize.height > 0 else {
+      return false
+    }
+
+    let originY = bounds.midY - trackSize.height / 2
+    let leadingRect = CGRect(
+      x: bounds.minX + leadingInset,
+      y: originY,
+      width: trackSize.width,
+      height: trackSize.height
+    ).insetBy(dx: -hitSlop, dy: -hitSlop)
+    let trailingRect = CGRect(
+      x: bounds.maxX - trailingInset - trackSize.width,
+      y: originY,
+      width: trackSize.width,
+      height: trackSize.height
+    ).insetBy(dx: -hitSlop, dy: -hitSlop)
+
+    return leadingRect.contains(point) || trailingRect.contains(point)
+  }
+}
+
+struct PlayerSpeedHoldGesturePolicy {
+  static func recognizerEnabled(canBegin: Bool, isActive: Bool) -> Bool {
+    canBegin || isActive
+  }
+}
+
 /// media-kit tarzı: kontroller **kapalıyken** tek parmak `UITapGestureRecognizer` ile göster (sürükleyerek kapatmayı
 /// `touchesBegan` ile karıştırmaz). **Açıkken** gizleme yine tap; `UILongPressGestureRecognizer` (2x) ile
 /// `require(toFail:)` sırası kullanılır.
@@ -17,6 +59,9 @@ final class PlayerMediaKitTouchContainerView: UIView, UIGestureRecognizerDelegat
   }
   var enableSpeedHold: Bool = false
   var isSpeedHoldActive: Bool = false
+  var edgeSliderTrackSize: CGSize = .zero
+  var edgeSliderLeadingInset: CGFloat = 0
+  var edgeSliderTrailingInset: CGFloat = 0
 
   fileprivate let centerView = MediaKitCenterPanel()
   private let videoPinch = UIPinchGestureRecognizer()
@@ -64,7 +109,10 @@ final class PlayerMediaKitTouchContainerView: UIView, UIGestureRecognizerDelegat
     centerView.configureRecognizers(
       showControls: show,
       enableSpeedHold: enableSpeedHold,
-      isSpeedHoldActive: isSpeedHoldActive
+      isSpeedHoldActive: isSpeedHoldActive,
+      edgeSliderTrackSize: edgeSliderTrackSize,
+      edgeSliderLeadingInset: edgeSliderLeadingInset,
+      edgeSliderTrailingInset: edgeSliderTrailingInset
     )
   }
 
@@ -110,6 +158,9 @@ private final class MediaKitCenterPanel: UIView, UIGestureRecognizerDelegate {
   private let hideTap = UITapGestureRecognizer()
   private let speedHold = UILongPressGestureRecognizer()
   private var controlsVisible = true
+  private var edgeSliderTrackSize: CGSize = .zero
+  private var edgeSliderLeadingInset: CGFloat = 0
+  private var edgeSliderTrailingInset: CGFloat = 0
 
   override init(frame: CGRect) {
     super.init(frame: .zero)
@@ -144,34 +195,42 @@ private final class MediaKitCenterPanel: UIView, UIGestureRecognizerDelegate {
     fatalError("init(coder:) has not been implemented")
   }
 
-  func configureRecognizers(showControls: Bool, enableSpeedHold: Bool, isSpeedHoldActive: Bool) {
+  func configureRecognizers(
+    showControls: Bool,
+    enableSpeedHold: Bool,
+    isSpeedHoldActive: Bool,
+    edgeSliderTrackSize: CGSize,
+    edgeSliderLeadingInset: CGFloat,
+    edgeSliderTrailingInset: CGFloat
+  ) {
     controlsVisible = showControls
+    self.edgeSliderTrackSize = edgeSliderTrackSize
+    self.edgeSliderLeadingInset = edgeSliderLeadingInset
+    self.edgeSliderTrailingInset = edgeSliderTrailingInset
     showTap.isEnabled = !showControls && !isSpeedHoldActive
     hideTap.isEnabled = showControls && !isSpeedHoldActive
-    speedHold.isEnabled = enableSpeedHold
+    // Once the hold has begun, transient buffering must not disable (and therefore
+    // cancel) the recognizer. The user's finger-up remains the single end condition.
+    speedHold.isEnabled = PlayerSpeedHoldGesturePolicy.recognizerEnabled(
+      canBegin: enableSpeedHold,
+      isActive: isSpeedHoldActive
+    )
   }
-
-  /// Yan parlaklık/ses slider şeritleri (PlayerControlCenterStyleEdgeSliders, üstte
-  /// zIndex 32) ekranın sol/sağ kenarında durur. Bu panel tam ekran olduğu ve tüm
-  /// recognizer'lar cancelsTouchesInView=false çalıştığı için, slider'a dokunmak aynı
-  /// anda 2x hız basılı-tutmayı ve krom gizleme tap'ini de tetikliyordu. Kenar şeridinde
-  /// başlayan dokunuşları burada hiç alma. 110pt, PlayerView'daki pull-down bastırma
-  /// bölgesiyle aynı (interactiveDismissShouldSuppressPullDown).
-  private static let edgeSliderStripWidth: CGFloat = 110
 
   func gestureRecognizer(
     _ gestureRecognizer: UIGestureRecognizer,
     shouldReceive touch: UITouch
   ) -> Bool {
-    // The edge sliders only exist while the chrome is visible; with controls hidden
-    // the strips must stay touchable, otherwise long-press 2x and tap-to-show-chrome
-    // silently dead-zone ~55% of an iPhone portrait screen.
+    // The edge sliders only exist while the chrome is visible; with controls hidden,
+    // every point must remain a valid video gesture target.
     guard controlsVisible else { return true }
-    let x = touch.location(in: self).x
-    if x <= Self.edgeSliderStripWidth || x >= bounds.width - Self.edgeSliderStripWidth {
-      return false
-    }
-    return true
+    return !PlayerEdgeSliderGestureExclusion.contains(
+      touch.location(in: self),
+      in: bounds,
+      trackSize: edgeSliderTrackSize,
+      leadingInset: edgeSliderLeadingInset,
+      trailingInset: edgeSliderTrailingInset
+    )
   }
 
   @objc private func showTapRecognized() {
@@ -206,6 +265,13 @@ struct PlayerMediaKitStyleTouchOverlay: UIViewRepresentable {
   let isSeekDisabled: Bool
   let videoZoomScale: CGFloat
   let isSpeedHoldActive: Bool
+  let isSpeedHoldEnabled: Bool
+  let edgeSliderTrackSize: CGSize
+  let edgeSliderLeadingInset: CGFloat
+  let edgeSliderTrailingInset: CGFloat
+  /// Disabled while the player is shrinking into / sitting in the mini card, so the
+  /// UIKit tap/pinch/pan recognizers don't intercept touches meant for the mini chrome.
+  var interactionEnabled: Bool = true
   let onResetTimer: () -> Void
   let onInvalidateTimer: () -> Void
   let onSpeedHoldBegan: () -> Void
@@ -252,8 +318,12 @@ struct PlayerMediaKitStyleTouchOverlay: UIViewRepresentable {
     context.coordinator.onVideoPanEnded = onVideoPanEnded
     context.coordinator.onVideoSurfaceTap = onVideoSurfaceTap
     uiView.videoZoomScale = videoZoomScale
-    uiView.enableSpeedHold = !isSeekDisabled && videoZoomScale <= 1.02
+    uiView.enableSpeedHold = isSpeedHoldEnabled && !isSeekDisabled && videoZoomScale <= 1.02
     uiView.isSpeedHoldActive = isSpeedHoldActive
+    uiView.edgeSliderTrackSize = edgeSliderTrackSize
+    uiView.edgeSliderLeadingInset = edgeSliderLeadingInset
+    uiView.edgeSliderTrailingInset = edgeSliderTrailingInset
+    uiView.isUserInteractionEnabled = interactionEnabled
     uiView.syncPanels()
     uiView.setNeedsLayout()
   }

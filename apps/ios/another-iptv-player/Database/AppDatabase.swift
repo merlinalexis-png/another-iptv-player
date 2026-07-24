@@ -346,6 +346,114 @@ struct AppDatabase {
             )
         }
 
+        // EPG (Electronic Programme Guide). A previous EPG attempt used blob caches
+        // (epgShortCache/xmltvGuideCache) that were later dropped; those migration
+        // names are burned, so a fresh normalized schema is added here. Programme
+        // rows are keyed by a normalized channelKey (trimmed+lowercased XMLTV id /
+        // Xtream epg_channel_id / M3U tvg-id) so lookups survive the case mismatches
+        // feeds and playlists routinely disagree on.
+        migrator.registerMigration("addEPGSupport") { db in
+            try db.create(table: "epgProgramme") { t in
+                t.column("playlistId", .text).notNull()
+                    .references("playlist", column: "id", onDelete: .cascade)
+                t.column("channelKey", .text).notNull()
+                t.column("startTs", .integer).notNull()   // unix epoch seconds, UTC
+                t.column("stopTs", .integer).notNull()
+                t.column("title", .text).notNull()
+                t.column("subtitle", .text)
+                t.column("desc", .text)
+                t.column("category", .text)
+                t.column("iconURL", .text)
+                t.column("episodeNum", .text)
+                t.primaryKey(["playlistId", "channelKey", "startTs"], onConflict: .replace)
+            }
+            // Retention pruning (DELETE WHERE stopTs < cutoff) + "on air now" range scans.
+            try db.create(
+                index: "idx_epgProgramme_playlist_stop",
+                on: "epgProgramme",
+                columns: ["playlistId", "stopTs"],
+                ifNotExists: true
+            )
+
+            try db.create(table: "epgChannel") { t in
+                t.column("playlistId", .text).notNull()
+                    .references("playlist", column: "id", onDelete: .cascade)
+                t.column("channelKey", .text).notNull()
+                t.column("displayName", .text)            // first display-name, original case
+                t.column("iconURL", .text)
+                t.primaryKey(["playlistId", "channelKey"], onConflict: .replace)
+            }
+
+            // TTL / bookkeeping, one row per playlist (single EPG source in v1).
+            try db.create(table: "epgSource") { t in
+                t.column("playlistId", .text).primaryKey()
+                    .references("playlist", column: "id", onDelete: .cascade)
+                t.column("sourceType", .text).notNull()   // "xtream_xmltv" | "m3u_xmltv" | "xtream_json"
+                t.column("url", .text)                    // resolved URL actually fetched
+                t.column("fetchedAt", .datetime)          // last attempt
+                t.column("lastSuccessAt", .datetime)      // TTL anchor
+                t.column("lastError", .text)              // localized, for settings UI
+                t.column("etag", .text)                   // conditional GET
+                t.column("lastModified", .text)
+                t.column("programmeCount", .integer).notNull().defaults(to: 0)
+                t.column("channelCount", .integer).notNull().defaults(to: 0)
+            }
+
+            try db.alter(table: "playlist") { t in
+                // Manual EPG URL override for M3U playlists. effectiveEPGURL =
+                // epgURLOverride ?? m3uEpgURL, so re-imports keep refreshing the
+                // header value without clobbering a user-entered URL.
+                t.add(column: "epgURLOverride", .text)
+                t.add(column: "epgEnabled", .boolean).notNull().defaults(to: true)
+            }
+        }
+
+        // Catch-up (timeshift) support: archive flags from get_live_streams (raw
+        // panel JSON has them but they were never decoded) plus the panel timezone
+        // and probed timeshift URL style needed to build valid timeshift requests.
+        migrator.registerMigration("addCatchupSupport") { db in
+            try db.alter(table: "liveStream") { t in
+                t.add(column: "tvArchive", .integer).notNull().defaults(to: 0)
+                t.add(column: "tvArchiveDuration", .integer).notNull().defaults(to: 0)
+            }
+            try db.alter(table: "playlist") { t in
+                t.add(column: "serverTimezone", .text)   // IANA name from server_info
+                t.add(column: "timeshiftStyle", .text)   // "path" | "php" — probe result cache
+            }
+            try db.alter(table: "m3uChannel") { t in
+                t.add(column: "catchup", .text)
+                t.add(column: "catchupSource", .text)
+                t.add(column: "catchupDays", .integer)
+            }
+        }
+
+        // Parse refreshed XMLTV data into staging tables first. Publishing then
+        // becomes one short transaction, so guide readers never observe the gap
+        // between deleting the old guide and filling the new one batch by batch.
+        migrator.registerMigration("addEPGRefreshStaging") { db in
+            try db.create(table: "epgProgrammeStaging") { t in
+                t.column("playlistId", .text).notNull()
+                t.column("channelKey", .text).notNull()
+                t.column("startTs", .integer).notNull()
+                t.column("stopTs", .integer).notNull()
+                t.column("title", .text).notNull()
+                t.column("subtitle", .text)
+                t.column("desc", .text)
+                t.column("category", .text)
+                t.column("iconURL", .text)
+                t.column("episodeNum", .text)
+                t.primaryKey(["playlistId", "channelKey", "startTs"], onConflict: .replace)
+            }
+
+            try db.create(table: "epgChannelStaging") { t in
+                t.column("playlistId", .text).notNull()
+                t.column("channelKey", .text).notNull()
+                t.column("displayName", .text)
+                t.column("iconURL", .text)
+                t.primaryKey(["playlistId", "channelKey"], onConflict: .replace)
+            }
+        }
+
         return migrator
     }
 }

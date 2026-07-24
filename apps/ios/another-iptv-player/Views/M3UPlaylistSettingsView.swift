@@ -180,16 +180,9 @@ struct M3UPlaylistSettingsView: View {
                         Text(L("playlists.local_file")).foregroundColor(.secondary)
                     }
                 }
-                if let epg = playlist.m3uEpgURL, !epg.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(L("settings.m3u.epg_url"))
-                        Text(epg)
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
-                            .lineLimit(3)
-                    }
-                }
             }
+
+            M3UEPGSettingsSection(playlist: playlist)
 
             Section(header: Text(L("settings.stats.title"))) {
                 HStack {

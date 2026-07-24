@@ -8,4 +8,8 @@ struct PlaybackPresentation: Equatable {
     var artworkURL: URL?
     /// Canlı yayın: süre/ilerleme çubuğu sistemde farklı işlenir.
     var isLive: Bool = false
+    /// Current EPG programme title, surfaced as the Now Playing title on live channels.
+    var programmeTitle: String? = nil
+    /// Programme time range (carried for future catch-up transport; unused by live Now Playing).
+    var programmeInterval: DateInterval? = nil
 }

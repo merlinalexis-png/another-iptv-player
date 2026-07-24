@@ -124,13 +124,18 @@ struct AddPlaylistView: View {
         errorMessage = nil
         progressMessage = L("add_playlist.verifying")
         
-        let newPlaylist = Playlist(
+        // Carry EPG/catch-up columns over on edit so a name-only save doesn't
+        // reset them (the panel timezone is otherwise re-resolved lazily later).
+        var newPlaylist = Playlist(
             id: editingPlaylist?.id ?? UUID(),
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             serverURL: url.trimmingCharacters(in: .whitespacesAndNewlines),
             username: username.trimmingCharacters(in: .whitespacesAndNewlines),
             password: password.trimmingCharacters(in: .whitespacesAndNewlines),
-            filterAdultContent: filterAdultContent
+            filterAdultContent: filterAdultContent,
+            epgEnabled: editingPlaylist?.epgEnabled ?? true,
+            serverTimezone: editingPlaylist?.serverTimezone,
+            timeshiftStyle: editingPlaylist?.timeshiftStyle
         )
 
         // Credentials or filter changed check
@@ -159,6 +164,11 @@ struct AddPlaylistView: View {
         
         do {
             let response = try await client.verify()
+
+            // Capture the panel timezone for timeshift start-time conversion.
+            if let tz = response.serverInfo?.timezone?.trimmingCharacters(in: .whitespacesAndNewlines), !tz.isEmpty {
+                newPlaylist.serverTimezone = tz
+            }
 
             if response.userInfo?.auth == 1 {
                 await syncAndSave(newPlaylist: newPlaylist, client: client)

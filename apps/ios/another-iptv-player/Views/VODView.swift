@@ -94,7 +94,7 @@ struct VODView: View {
                     }
                     .refreshable {
                         // Bağımsız Task: refreshable iptali isteklere yayılmasın (bkz. LiveStreamsView).
-                        let work = Task { await contentStore.refreshFromNetwork(playlist: playlist) }
+                        let work = Task { await contentStore.refreshFromNetwork(playlist: playlist, only: .vod) }
                         await work.value
                     }
                     .onChange(of: pendingScrollTarget) { _, target in
@@ -648,10 +648,12 @@ struct VODPlayerShell: View {
     let playlist: Playlist
     let queue: [DBVODStream]
     var onNavigateToDetail: ((String, String) -> Void)? = nil
+    private let initialMovie: DBVODStream
+    private let initialResumeMs: Int?
 
     @State private var currentMovie: DBVODStream
     @State private var resumeMs: Int?
-    @State private var instanceId = UUID()
+    @Environment(\.playerOverlayPresentationID) private var overlayPresentationID
 
     init(
         playlist: Playlist,
@@ -663,6 +665,8 @@ struct VODPlayerShell: View {
         self.playlist = playlist
         self.queue = queue
         self.onNavigateToDetail = onNavigateToDetail
+        self.initialMovie = initialMovie
+        self.initialResumeMs = initialResumeMs
         _currentMovie = State(initialValue: initialMovie)
         _resumeMs = State(initialValue: initialResumeMs)
     }
@@ -698,7 +702,20 @@ struct VODPlayerShell: View {
                 onNextChannel: { jump(by: 1) },
                 onNavigateToDetail: onNavigateToDetail
             )
-            .id(instanceId)
+            .onChange(of: overlayPresentationID) { _, _ in
+                applyInitialSelectionIfNeeded()
+            }
+        }
+    }
+
+    private func applyInitialSelectionIfNeeded() {
+        guard currentMovie.streamId != initialMovie.streamId
+                || resumeMs != initialResumeMs else { return }
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        withTransaction(tx) {
+            currentMovie = initialMovie
+            resumeMs = initialResumeMs
         }
     }
 
@@ -722,7 +739,6 @@ struct VODPlayerShell: View {
             withTransaction(tx) {
                 currentMovie = movie
                 resumeMs = history?.lastTimeMs
-                instanceId = UUID()
             }
         }
     }

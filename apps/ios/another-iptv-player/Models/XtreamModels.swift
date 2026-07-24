@@ -53,7 +53,11 @@ struct XtreamUserInfo: Codable {
     let activeCons: String?
     let createdAt: String?
     let maxConnections: String?
-    
+    /// e.g. ["m3u8", "ts", "rtmp"] — used to prefer a seekable `.m3u8` timeshift
+    /// extension when available. Some panels send this as a comma-joined string
+    /// rather than a JSON array, so decoding is tolerant (nil = unknown).
+    let allowedOutputFormats: [String]?
+
     enum CodingKeys: String, CodingKey {
         case username, password, message, auth, status
         case expDate = "exp_date"
@@ -61,8 +65,9 @@ struct XtreamUserInfo: Codable {
         case activeCons = "active_cons"
         case createdAt = "created_at"
         case maxConnections = "max_connections"
+        case allowedOutputFormats = "allowed_output_formats"
     }
-    
+
     init(from decoder: Decoder) throws {
         let container = try? decoder.container(keyedBy: CodingKeys.self)
         username = container?.decodeFlexibleStringIfPresent(forKey: .username)
@@ -75,6 +80,7 @@ struct XtreamUserInfo: Codable {
         activeCons = container?.decodeFlexibleStringIfPresent(forKey: .activeCons)
         createdAt = container?.decodeFlexibleStringIfPresent(forKey: .createdAt)
         maxConnections = container?.decodeFlexibleStringIfPresent(forKey: .maxConnections)
+        allowedOutputFormats = try? container?.decodeIfPresent([String].self, forKey: .allowedOutputFormats)
     }
 }
 
@@ -86,7 +92,10 @@ struct XtreamServerInfo: Codable {
     let rtmpPort: String?
     let timezone: String?
     let timeNow: String?
-    
+    /// Unix epoch (UTC) of the panel's "now" — used to derive the panel's UTC
+    /// offset when `timezone` is missing or an invalid IANA name.
+    let timestampNow: Int?
+
     enum CodingKeys: String, CodingKey {
         case url, port
         case httpsPort = "https_port"
@@ -94,8 +103,9 @@ struct XtreamServerInfo: Codable {
         case rtmpPort = "rtmp_port"
         case timezone
         case timeNow = "time_now"
+        case timestampNow = "timestamp_now"
     }
-    
+
     init(from decoder: Decoder) throws {
         let container = try? decoder.container(keyedBy: CodingKeys.self)
         url = container?.decodeFlexibleStringIfPresent(forKey: .url)
@@ -105,6 +115,7 @@ struct XtreamServerInfo: Codable {
         rtmpPort = container?.decodeFlexibleStringIfPresent(forKey: .rtmpPort)
         timezone = container?.decodeFlexibleStringIfPresent(forKey: .timezone)
         timeNow = container?.decodeFlexibleStringIfPresent(forKey: .timeNow)
+        timestampNow = container?.decodeFlexibleIntIfPresent(forKey: .timestampNow)
     }
 }
 
@@ -141,6 +152,9 @@ struct XtreamLiveStream: Codable, Identifiable {
     let name: String?
     let categoryId: String?
     let isAdult: Int?
+    /// Catch-up flags — present in raw `get_live_streams` JSON, previously undecoded.
+    let tvArchive: Int?
+    let tvArchiveDuration: Int?
 
     var id: Int { streamId ?? 0 }
 
@@ -151,6 +165,8 @@ struct XtreamLiveStream: Codable, Identifiable {
         case name
         case categoryId = "category_id"
         case isAdult = "is_adult"
+        case tvArchive = "tv_archive"
+        case tvArchiveDuration = "tv_archive_duration"
     }
 
     init(from decoder: Decoder) throws {
@@ -161,6 +177,8 @@ struct XtreamLiveStream: Codable, Identifiable {
         name = container?.decodeFlexibleStringIfPresent(forKey: .name)
         categoryId = container?.decodeFlexibleStringIfPresent(forKey: .categoryId)
         isAdult = container?.decodeFlexibleIntIfPresent(forKey: .isAdult)
+        tvArchive = container?.decodeFlexibleIntIfPresent(forKey: .tvArchive)
+        tvArchiveDuration = container?.decodeFlexibleIntIfPresent(forKey: .tvArchiveDuration)
     }
 }
 

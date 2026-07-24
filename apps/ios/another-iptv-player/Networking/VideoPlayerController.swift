@@ -87,14 +87,93 @@ enum VideoAspectMode: String, CaseIterable {
   }
 }
 
-/// `PlayerView` köprüsü: libmpv `MPVPlayer` + Now Playing / uzaktan kumanda.
+/// `PlayerView` köprüsü: `KSPlayerEngine` + Now Playing / uzaktan kumanda.
 final class VideoPlayerController: ObservableObject {
+  /// SwiftUI may construct the incoming player before the outgoing player's
+  /// `onDisappear` runs. Weak process-level registration lets the new controller
+  /// see and claim an active AirPlay owner during that overlap window.
+  private final class WeakControllerReference {
+    weak var value: VideoPlayerController?
+    init(_ value: VideoPlayerController) { self.value = value }
+  }
+
+  private static var activeControllerReferences: [WeakControllerReference] = []
+
+  private static func register(_ controller: VideoPlayerController) {
+    activeControllerReferences.removeAll { $0.value == nil }
+    activeControllerReferences.append(WeakControllerReference(controller))
+  }
+
+  private static func unregister(_ controller: VideoPlayerController) {
+    activeControllerReferences.removeAll { $0.value == nil || $0.value === controller }
+  }
+
+  private static func engagedCastController() -> CastController? {
+    activeControllerReferences.removeAll { $0.value == nil }
+    return activeControllerReferences.lazy
+      .compactMap(\.value)
+      .filter { !$0.isTornDown }
+      .compactMap(\.castController)
+      .first { $0.isEngaged }
+  }
+
+  private static func hasNativeExternalPlayback(excluding controller: VideoPlayerController) -> Bool {
+    activeControllerReferences.removeAll { $0.value == nil }
+    return activeControllerReferences.lazy
+      .compactMap(\.value)
+      .contains { other in
+        other !== controller && !other.isTornDown
+          && (other.engine.isExternalPlaybackActive
+              || other.isAirPlayPlaybackActive)
+      }
+  }
+
+  /// AVAudioSession is process-wide while VideoPlayerController is screen-scoped.
+  /// A newly opened player claims a newer lease so an older controller's delayed
+  /// teardown cannot deactivate the session underneath current playback.
+  nonisolated private static let audioSessionLeaseLock = NSLock()
+  nonisolated(unsafe) private static var audioSessionLeaseSerial: UInt64 = 0
+  nonisolated(unsafe) private static var currentAudioSessionLease: UInt64?
+
+  nonisolated private static func claimAudioSessionLease() -> (token: UInt64, previous: UInt64?) {
+    audioSessionLeaseLock.lock()
+    defer { audioSessionLeaseLock.unlock() }
+    let previous = currentAudioSessionLease
+    audioSessionLeaseSerial &+= 1
+    currentAudioSessionLease = audioSessionLeaseSerial
+    return (audioSessionLeaseSerial, previous)
+  }
+
+  nonisolated private static func rollBackAudioSessionLease(
+    _ token: UInt64, previous: UInt64?
+  ) {
+    audioSessionLeaseLock.lock()
+    defer { audioSessionLeaseLock.unlock() }
+    if currentAudioSessionLease == token {
+      currentAudioSessionLease = previous
+    }
+  }
+
+  nonisolated private static func deactivateAudioSessionIfCurrent(_ token: UInt64) {
+    audioSessionLeaseLock.lock()
+    defer { audioSessionLeaseLock.unlock() }
+    guard currentAudioSessionLease == token else { return }
+    currentAudioSessionLease = nil
+    try? AVAudioSession.sharedInstance().setActive(
+      false, options: .notifyOthersOnDeactivation
+    )
+  }
+
   private let log = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "another-iptv-player",
     category: "VideoPlayer"
   )
 
-  let mpvEngine = MPVPlayer()
+  let engine: KSPlayerEngine
+  /// AirPlay cast orkestratörü. Cast oturumu aktifken motor tamamen durdurulur;
+  /// sunum ve transport bu nesne üzerinden akar.
+  let castController: CastController?
+  private let castOwnerToken = UUID()
 
   @Published var state: VideoPlayerState = .idle
   @Published var isPlaying: Bool = false
@@ -119,7 +198,7 @@ final class VideoPlayerController: ObservableObject {
   @Published var hwdecCurrent: String = ""
   @Published var videoCodecName: String = ""
   @Published var seekLatencyMs: Int = -1
-  /// Ağ / yükleme hatası (`MPVPlayer.playbackFailureMessage` yansıması).
+  /// Ağ / yükleme hatası (`KSPlayerEngine.playbackFailureMessage` yansıması).
   @Published var playbackFailureMessage: String?
 
   @Published var videoTracks: [TrackMenuOption] = []
@@ -130,6 +209,17 @@ final class VideoPlayerController: ObservableObject {
   @Published var currentSubtitleTrackId: Int = -1
 
   @Published var isPiPActive: Bool = false
+  /// Yalnız KSPlayer/AVPlayer yolunda true: gerçek AirPlay external playback mümkün.
+  @Published private(set) var isAirPlayVideoCapable: Bool = false
+  /// Debug overlay için: aktif ses codec'i (AirPlay adaylığı teşhisi).
+  @Published private(set) var audioCodecName: String = ""
+  /// FFmpeg yolunda: AirPlay butonu önce remux hazırlar, sonra sistem seçiciyi açar.
+  @Published private(set) var needsAirPlayPreparation: Bool = false
+  /// Cast oturumu sunumda: transport/scrubber cast'e akar, track menüsü pasif.
+  @Published private(set) var isCastPresenting: Bool = false
+  /// Video şu anda AirPlay hedefinde oynuyor (native external ya da remux cast);
+  /// yerel yüzeyde "AirPlay'de oynatılıyor" placeholder'ı gösterilir.
+  @Published private(set) var isAirPlayPlaybackActive: Bool = false
   @Published var aspectMode: VideoAspectMode = .bestFit
   /// Canlı yayın bayrağı: `setPlaybackPresentation` üzerinden güncellenir. PiP sample buffer
   /// delegesi skip kontrollerini gizlemek için bu değeri okur (mpv duration canlıda 0 dönmeyebilir).
@@ -144,11 +234,15 @@ final class VideoPlayerController: ObservableObject {
     let url: URL
     let startSeconds: TimeInterval?
     let isLiveStream: Bool
+    let userAgent: String?
   }
 
   private var pendingLoadRequest: PendingLoadRequest?
+  /// Son `play(url:)` isteği — AirPlay hazırlığı ve cast devri buradan içerik kurar.
+  private var currentLoadRequest: PendingLoadRequest?
   private var isTornDown = false
   private var audioSessionActivated = false
+  private var audioSessionLease: UInt64?
   /// System brightness before the app's first in-player adjustment; restored on teardown
   /// so leaving the player never strands the whole device at the in-video level.
   private var brightnessToRestore: CGFloat?
@@ -156,6 +250,10 @@ final class VideoPlayerController: ObservableObject {
   private var remoteCommandTargets: [(MPRemoteCommand, Any)] = []
   private var seriesEpisodeOnPrevious: (() -> Void)?
   private var seriesEpisodeOnNext: (() -> Void)?
+  /// Remote-command'lar yeniden kurulduğunda enable durumunu geri uygulamak için.
+  private var episodeNavCanPrevious = false
+  private var episodeNavCanNext = false
+  private var episodeNavSwapSkip = true
   private var cancellables = Set<AnyCancellable>()
 
   private var nowPlayingArtwork: UIImage?
@@ -172,70 +270,31 @@ final class VideoPlayerController: ObservableObject {
   private var importedSubtitleContentKey: String?
 
   init() {
+    engine = KSPlayerEngine()
+    castController = CastController.takeCrossScreenHandoff()
+      ?? Self.engagedCastController()
+      ?? CastController()
     screenBrightness = UIScreen.main.brightness
     wireEngine()
+    wireCastController()
+    Self.register(self)
   }
 
   deinit {
     teardown()
   }
 
-  private func wireEngine() {
-    let e = mpvEngine
-    let sync = { [weak self] in
-      self?.syncFromEngine()
-    }
-    e.$position.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$duration.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$isPaused.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$isCompleted.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$playbackRate.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$isBuffering.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$isSeekable.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$videoDisplayWidth.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$videoDisplayHeight.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$streamFPS.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$renderFPS.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$videoBitrate.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$droppedFrameCount.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$delayedFrameCount.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$cacheBufferingState.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$cacheDurationSeconds.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$avSyncSeconds.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$networkSpeedBps.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$hwdecCurrent.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$videoCodecName.receive(on: DispatchQueue.main).sink { _ in sync() }.store(in: &cancellables)
-    e.$playbackFailureMessage
-      .receive(on: DispatchQueue.main)
-      .sink { [weak self] msg in
-        self?.playbackFailureMessage = msg
-        self?.syncFromEngine()
-      }
-      .store(in: &cancellables)
-    e.$isPlaybackEstablished
-      .removeDuplicates()
-      .receive(on: DispatchQueue.main)
-      .sink { [weak self] established in
-        guard let self else { return }
-        self.syncFromEngine()
-        if established, self.pendingPreferredTrackSelection {
-          self.pendingPreferredTrackSelection = false
-          // If an imported subtitle is selected, the global subtitle preference must not override it.
-          let importedSelected = self.restoreImportedSubtitles()
-          self.updateTracks(applyPreferences: true, skipSubtitleSelection: importedSelected)
-        }
-      }
-      .store(in: &cancellables)
+  /// Kenar tespiti için son görülen motor durumları (`changePublisher` toplu yayınlar).
+  private var lastEngineIsReady = false
+  private var lastEngineEstablished = false
 
-    e.$isReady
-      .removeDuplicates()
+  private func wireEngine() {
+    // DispatchQueue scheduler'ı her zaman async planlar; objectWillChange değişimden
+    // ÖNCE ateşlense de sink koşarken değerler güncellenmiş olur.
+    engine.changePublisher
       .receive(on: DispatchQueue.main)
-      .sink { [weak self] ready in
-        guard let self else { return }
-        if ready {
-          self.tryFlushPendingLoad()
-        }
-        self.syncFromEngine()
+      .sink { [weak self] in
+        self?.handleEngineChange()
       }
       .store(in: &cancellables)
 
@@ -262,17 +321,96 @@ final class VideoPlayerController: ObservableObject {
 
     // Kulaklık çıkarma / Bluetooth kopması: platform geleneği (AVPlayer davranışı)
     // oynatmayı duraklatmaktır — aksi halde ses aniden hoparlörden devam eder.
+    // Cast aktifken bu kural İŞLEMEZ: oynatma TV'de, AirPlay rota kararları
+    // CastController'ındır (iki gözlemcinin çelişmesi saha bulgusuydu).
     NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
       .receive(on: DispatchQueue.main)
       .sink { [weak self] note in
         guard let self,
               let reasonRaw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
               AVAudioSession.RouteChangeReason(rawValue: reasonRaw) == .oldDeviceUnavailable,
-              self.isPlaying
+              self.isPlaying,
+              self.castController?.isEngaged != true
         else { return }
-        self.mpvEngine.pause()
+        self.engine.pause()
       }
       .store(in: &cancellables)
+  }
+
+  private func wireCastController() {
+    guard let cast = castController else { return }
+    cast.objectWillChange
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] in
+        self?.handleEngineChange()
+      }
+      .store(in: &cancellables)
+    cast.attachOwner(
+      token: castOwnerToken,
+      stopDirectPlayback: { [weak self] in
+      guard let self else { return }
+      self.engine.stopPlayback()
+      // KSPlayerLayer.deinit removeTarget(nil) ile TÜM remote-command hedeflerini
+      // siler; kilit ekranı kontrolleri her layer yıkımından sonra yeniden kurulur.
+      self.reinstallRemoteCommands()
+      },
+      resumeDirectPlayback: { [weak self] content, at in
+      guard let self, !self.isTornDown else { return }
+      self.play(
+        url: content.url,
+        startSeconds: content.isLive || at < 2 ? nil : at,
+        isLiveStream: content.isLive,
+        userAgent: content.userAgent
+      )
+      },
+      onTimeTick: { [weak self] seconds in
+        self?.engine.updateSubtitleCue(at: seconds)
+      }
+    )
+    // A controller taken from the cross-screen handoff is already presenting;
+    // publish that state immediately instead of waiting for its next time tick.
+    handleEngineChange()
+  }
+
+  private func handleEngineChange() {
+    let established = engine.isPlaybackEstablished
+    if established != lastEngineEstablished {
+      lastEngineEstablished = established
+      if established, pendingPreferredTrackSelection {
+        pendingPreferredTrackSelection = false
+        // If an imported subtitle is selected, the global subtitle preference must not override it.
+        let importedSelected = restoreImportedSubtitles()
+        updateTracks(applyPreferences: true, skipSubtitleSelection: importedSelected)
+      }
+    }
+    let ready = engine.isReady
+    if ready != lastEngineIsReady {
+      lastEngineIsReady = ready
+      if ready { tryFlushPendingLoad() }
+    }
+    let castPresenting = castController?.isPresenting ?? false
+    let failure = castPresenting ? nil : engine.playbackFailureMessage
+    if playbackFailureMessage != failure { playbackFailureMessage = failure }
+    let ks = engine
+    if isPiPActive != ks.isPiPActive { isPiPActive = ks.isPiPActive }
+    if audioCodecName != ks.audioCodecName { audioCodecName = ks.audioCodecName }
+    // Remux adaylığı: FFmpeg yolu + uyumlu codec'ler.
+    let remuxCandidate = ks.isFFmpegBackendActive
+      && !ks.videoCodecName.isEmpty
+      && RemuxHLSWriter.isCompatible(
+        videoFourCC: ks.videoCodecName,
+        audioFourCC: ks.audioCodecName.isEmpty ? nil : ks.audioCodecName
+      )
+    let capable = castPresenting || ks.isAirPlayVideoCapable || remuxCandidate
+    if isAirPlayVideoCapable != capable { isAirPlayVideoCapable = capable }
+    let needsPrep = !castPresenting && !ks.isAirPlayVideoCapable && remuxCandidate
+    if needsAirPlayPreparation != needsPrep { needsAirPlayPreparation = needsPrep }
+    let airPlayActive = castPresenting
+      ? (castController?.isExternalPlaybackActive ?? false)
+      : ks.isExternalPlaybackActive
+    if isAirPlayPlaybackActive != airPlayActive { isAirPlayPlaybackActive = airPlayActive }
+    if isCastPresenting != castPresenting { isCastPresenting = castPresenting }
+    syncFromEngine()
   }
 
   private func handleAudioSessionInterruption(_ note: Notification) {
@@ -285,24 +423,100 @@ final class VideoPlayerController: ObservableObject {
       // The session is already deactivated by the system; clear the flag so the
       // next setupAudioSession() call is not short-circuited.
       audioSessionActivated = false
-      if isPlaying { mpvEngine.pause() }
+      if isPlaying { routedPause() }
     case .ended:
       let optionsValue = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
       let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
       setupAudioSession()
       if options.contains(.shouldResume), !isTornDown {
-        mpvEngine.play()
+        routedPlay()
       }
     @unknown default:
       break
     }
   }
 
+  // MARK: - Transport routing (engine ↔ cast)
+
+  /// Cast oturumu sunumdayken transport cast player'a, aksi halde motora gider.
+  private var castPresentingNow: Bool { castController?.isPresenting ?? false }
+
+  private func routedPlay() {
+    if let cast = castController, cast.isPresenting {
+      cast.play()
+    } else {
+      engine.play()
+    }
+  }
+
+  private func routedPause() {
+    if let cast = castController, cast.isPresenting {
+      cast.pause()
+    } else {
+      engine.pause()
+    }
+  }
+
+  /// Mutlak (kaynak-zamanı) seek; uzaktan kumanda ve scrubber buradan geçer.
+  func seekAbsolute(to seconds: TimeInterval) {
+    markSeekRequestStart()
+    if let cast = castController, cast.isPresenting {
+      cast.seek(toSource: seconds)
+    } else {
+      engine.seek(to: seconds)
+    }
+  }
+
+  /// Sunum kaynağı: cast oturumu aktifken cast, değilse motor. Tek anahtar noktası —
+  /// aşağıdaki tüm @Published eşlemeleri bu anlık görüntüden beslenir.
+  private struct PresentationSnapshot {
+    var position: TimeInterval
+    var duration: TimeInterval
+    var isPaused: Bool
+    var isBuffering: Bool
+    var isCompleted: Bool
+    var isSeekable: Bool
+    var isEstablished: Bool
+    var isReady: Bool
+    var failureMessage: String?
+    var rate: Double
+  }
+
+  private func presentationSnapshot() -> PresentationSnapshot {
+    if let cast = castController, cast.isPresenting {
+      return PresentationSnapshot(
+        position: cast.position,
+        duration: cast.duration,
+        isPaused: cast.isPaused,
+        isBuffering: cast.isBuffering,
+        isCompleted: cast.isCompleted,
+        isSeekable: cast.isSeekable,
+        isEstablished: cast.isPlaybackEstablished,
+        isReady: true,
+        failureMessage: nil,
+        rate: Double(rate)
+      )
+    }
+    return PresentationSnapshot(
+      position: engine.position,
+      duration: engine.duration,
+      isPaused: engine.isPaused,
+      isBuffering: engine.isBuffering,
+      isCompleted: engine.isCompleted,
+      isSeekable: engine.isSeekable,
+      isEstablished: engine.isPlaybackEstablished,
+      isReady: engine.isReady,
+      failureMessage: engine.playbackFailureMessage,
+      rate: engine.playbackRate
+    )
+  }
+
   /// Her @Published atama `objectWillChange` fire eder — Swift @Published eşitlik kontrolü yapmaz.
   /// Tüm atamaları `if current != new` ile koru; aksi halde saniyede 8×22 = ~176 gereksiz SwiftUI invalidation olur.
   private func syncFromEngine() {
-    let pos = mpvEngine.position
-    let dur = mpvEngine.duration
+    let snapshot = presentationSnapshot()
+    let pos = snapshot.position
+    let dur = snapshot.duration
     let posMs = Int64((pos.isFinite ? pos : 0) * 1000)
     let durMs = Int64((dur.isFinite ? dur : 0) * 1000)
     if timeMs != posMs { timeMs = posMs }
@@ -316,56 +530,57 @@ final class VideoPlayerController: ObservableObject {
     }
     if position != newPosition { position = newPosition }
 
-    let failed = !(mpvEngine.playbackFailureMessage ?? "").isEmpty
+    let failed = !(snapshot.failureMessage ?? "").isEmpty
     let newIsPlaying =
-      !failed && mpvEngine.isPlaybackEstablished && mpvEngine.isReady
-      && !mpvEngine.isPaused && !mpvEngine.isCompleted
+      !failed && snapshot.isEstablished && snapshot.isReady
+      && !snapshot.isPaused && !snapshot.isCompleted
     if isPlaying != newIsPlaying { isPlaying = newIsPlaying }
 
-    let newRate = Float(mpvEngine.playbackRate)
+    let newRate = Float(snapshot.rate)
     if rate != newRate { rate = newRate }
 
-    if isSeekable != mpvEngine.isSeekable { isSeekable = mpvEngine.isSeekable }
+    if isSeekable != snapshot.isSeekable { isSeekable = snapshot.isSeekable }
 
-    let newBuf: Float = mpvEngine.isBuffering ? 0.35 : 0
+    let newBuf: Float = snapshot.isBuffering ? 0.35 : 0
     if bufferingProgress != newBuf { bufferingProgress = newBuf }
 
-    if videoWidth != mpvEngine.videoDisplayWidth { videoWidth = mpvEngine.videoDisplayWidth }
-    if videoHeight != mpvEngine.videoDisplayHeight { videoHeight = mpvEngine.videoDisplayHeight }
-    if streamFPS != mpvEngine.streamFPS { streamFPS = mpvEngine.streamFPS }
-    if renderFPS != mpvEngine.renderFPS { renderFPS = mpvEngine.renderFPS }
-    if videoBitrate != mpvEngine.videoBitrate { videoBitrate = mpvEngine.videoBitrate }
-    if droppedFrameCount != mpvEngine.droppedFrameCount {
-      droppedFrameCount = mpvEngine.droppedFrameCount
+    if videoWidth != engine.videoDisplayWidth { videoWidth = engine.videoDisplayWidth }
+    if videoHeight != engine.videoDisplayHeight { videoHeight = engine.videoDisplayHeight }
+    if streamFPS != engine.streamFPS { streamFPS = engine.streamFPS }
+    if renderFPS != engine.renderFPS { renderFPS = engine.renderFPS }
+    if videoBitrate != engine.videoBitrate { videoBitrate = engine.videoBitrate }
+    if droppedFrameCount != engine.droppedFrameCount {
+      droppedFrameCount = engine.droppedFrameCount
     }
-    if delayedFrameCount != mpvEngine.delayedFrameCount {
-      delayedFrameCount = mpvEngine.delayedFrameCount
+    if delayedFrameCount != engine.delayedFrameCount {
+      delayedFrameCount = engine.delayedFrameCount
     }
-    if cacheBufferingState != mpvEngine.cacheBufferingState {
-      cacheBufferingState = mpvEngine.cacheBufferingState
+    if cacheBufferingState != engine.cacheBufferingState {
+      cacheBufferingState = engine.cacheBufferingState
     }
-    if cacheDurationSeconds != mpvEngine.cacheDurationSeconds {
-      cacheDurationSeconds = mpvEngine.cacheDurationSeconds
+    if cacheDurationSeconds != engine.cacheDurationSeconds {
+      cacheDurationSeconds = engine.cacheDurationSeconds
     }
-    let newAhead = max(mpvEngine.bufferTimelineEnd - (Double(timeMs) / 1000.0), 0)
+    let newAhead = max(engine.bufferTimelineEnd - (Double(timeMs) / 1000.0), 0)
     if cacheAheadSeconds != newAhead { cacheAheadSeconds = newAhead }
-    if avSyncSeconds != mpvEngine.avSyncSeconds { avSyncSeconds = mpvEngine.avSyncSeconds }
-    if networkSpeedBps != mpvEngine.networkSpeedBps { networkSpeedBps = mpvEngine.networkSpeedBps }
-    if hwdecCurrent != mpvEngine.hwdecCurrent { hwdecCurrent = mpvEngine.hwdecCurrent }
-    if videoCodecName != mpvEngine.videoCodecName { videoCodecName = mpvEngine.videoCodecName }
+    if avSyncSeconds != engine.avSyncSeconds { avSyncSeconds = engine.avSyncSeconds }
+    if networkSpeedBps != engine.networkSpeedBps { networkSpeedBps = engine.networkSpeedBps }
+    let newHwdec = castPresentingNow ? "airplay-cast" : engine.hwdecCurrent
+    if hwdecCurrent != newHwdec { hwdecCurrent = newHwdec }
+    if videoCodecName != engine.videoCodecName { videoCodecName = engine.videoCodecName }
 
     updateSeekLatencyIfNeeded(currentTimeMs: timeMs)
 
     let newState: VideoPlayerState
     if failed {
       newState = .error
-    } else if !mpvEngine.isReady {
+    } else if !snapshot.isReady {
       newState = .idle
-    } else if mpvEngine.isCompleted {
+    } else if snapshot.isCompleted {
       newState = .ended
-    } else if mpvEngine.isBuffering {
+    } else if snapshot.isBuffering {
       newState = .buffering
-    } else if mpvEngine.isPaused {
+    } else if snapshot.isPaused {
       newState = .paused
     } else {
       newState = .playing
@@ -391,40 +606,98 @@ final class VideoPlayerController: ObservableObject {
   private func tryFlushPendingLoad() {
     guard let request = pendingLoadRequest else { return }
     pendingLoadRequest = nil
-    log.info("Loading URL into mpv: \(request.url.absoluteString, privacy: .public)")
-    mpvEngine.load(
+    log.info("Loading URL into engine: \(request.url.absoluteString, privacy: .public)")
+    engine.load(
       request.url,
       play: true,
       startSeconds: request.startSeconds,
-      liveLowLatency: request.isLiveStream
+      liveLowLatency: request.isLiveStream,
+      userAgent: request.userAgent
     )
+    // Yeni KSPlayerLayer kurulurken eskisinin deinit'i tüm remote-command
+    // hedeflerini sildi; kilit ekranı kontrollerini geri kur.
+    reinstallRemoteCommands()
     let saved = SubtitleAppearancePersistence.load()
-    mpvEngine.applySubtitleAppearanceFromSettings(saved)
-    mpvEngine.setSubDelay(seconds: saved.delaySeconds)
-    mpvEngine.setAudioDelay(seconds: AudioDelayPersistence.load())
+    engine.applySubtitleAppearanceFromSettings(saved)
+    engine.setSubDelay(seconds: saved.delaySeconds)
+    engine.setAudioDelay(seconds: AudioDelayPersistence.load())
   }
 
   func setupAudioSession() {
     if audioSessionActivated { return }
+    let lease = Self.claimAudioSessionLease()
     do {
       let session = AVAudioSession.sharedInstance()
       try session.setCategory(.playback, mode: .moviePlayback, policy: .longFormVideo, options: [])
       try session.setActive(true, options: [])
       audioSessionActivated = true
+      audioSessionLease = lease.token
     } catch {
+      Self.rollBackAudioSessionLease(lease.token, previous: lease.previous)
       log.error("AVAudioSession: \(error.localizedDescription)")
     }
   }
 
-  func play(url: URL, startSeconds: TimeInterval? = nil, isLiveStream: Bool = false) {
+  func play(
+    url: URL,
+    startSeconds: TimeInterval? = nil,
+    isLiveStream: Bool = false,
+    userAgent: String? = nil
+  ) {
     guard !isTornDown else { return }
-    pendingPreferredTrackSelection = true
-    setupAudioSession()
-    pendingLoadRequest = PendingLoadRequest(
+    currentLoadRequest = PendingLoadRequest(
       url: url,
       startSeconds: startSeconds,
-      isLiveStream: isLiveStream
+      isLiveStream: isLiveStream,
+      userAgent: userAgent
     )
+    // Cast oturumu aktifken (zap / auto-next) içerik cast hattından akar; motor
+    // AÇILMAZ — panele ikinci bağlantı açmak bağlantı-limitli panellerde devir
+    // hatalarının kök nedeniydi. Native-external oynatma sırasında FFmpeg'lik
+    // içeriğe zap da doğrudan remux devriyle sürer. Üçüncü yol: önceki oynatıcı
+    // ekranı cast ortasında kapandıysa (film kapat → canlı aç) CastController'ın
+    // kendisi yeni ekrana devredilir; `cast.isEngaged` bu yolu doğrudan seçer.
+    if let cast = castController {
+      let nativeNext = !KSPlayerEngine.prefersFFmpegFirst(for: url)
+      let overlapsNativeExternalPlayback =
+        !cast.isEngaged && Self.hasNativeExternalPlayback(excluding: self)
+      if overlapsNativeExternalPlayback {
+        CastController.claimNativeExternalPlaybackFromActiveController()
+      }
+      let hasNativeExternalContinuation = overlapsNativeExternalPlayback
+        || (!cast.isEngaged && CastController.takeNativeExternalPlaybackContinuation())
+      let continueNativeExternalPlayback = hasNativeExternalContinuation
+      let crossoverToRemux =
+        engine.isExternalPlaybackActive
+        && !nativeNext
+      if cast.isEngaged || crossoverToRemux || continueNativeExternalPlayback {
+        pendingPreferredTrackSelection = false
+        setupAudioSession()
+        // Motor durdurulmuş; altyazı modeli önceki içeriğin seçimini taşıyor.
+        // Cast tikleri cue araması yapmaya devam ettiğinden yanlış içerik altyazısı
+        // basılmasın diye seçim temizlenir.
+        engine.selectSubtitleTrack(id: -1)
+        let content = CastController.Content(
+          url: url,
+          isLive: isLiveStream,
+          userAgent: userAgent,
+          startAt: isLiveStream ? 0 : (startSeconds ?? 0),
+          knownDuration: 0,
+          nativelyPlayable: nativeNext
+        )
+        if cast.isEngaged {
+          cast.playContent(content)
+        } else if continueNativeExternalPlayback {
+          cast.continueNativeExternalPlayback(with: content)
+        } else {
+          cast.startRemuxCast(content: content) { _ in }
+        }
+        return
+      }
+    }
+    pendingPreferredTrackSelection = true
+    setupAudioSession()
+    pendingLoadRequest = currentLoadRequest
     tryFlushPendingLoad()
   }
 
@@ -444,30 +717,48 @@ final class VideoPlayerController: ObservableObject {
 
   func togglePlayPause() {
     if isPlaying {
-      mpvEngine.pause()
+      routedPause()
     } else {
-      mpvEngine.play()
+      routedPlay()
     }
   }
 
   func jump(seconds: Int) {
+    if castPresentingNow {
+      seekAbsolute(to: Double(timeMs) / 1000.0 + Double(seconds))
+      return
+    }
     markSeekRequestStart()
-    mpvEngine.jumpRelative(seconds: seconds)
+    engine.jumpRelative(seconds: seconds)
   }
 
   func seek(to pos: Float) {
+    if castPresentingNow {
+      let dur = Double(durationMs) / 1000.0
+      guard dur > 0 else { return }
+      seekAbsolute(to: dur * Double(min(max(pos, 0), 1)))
+      return
+    }
     markSeekRequestStart()
-    mpvEngine.seekToFraction(pos)
+    engine.seekToFraction(pos)
   }
 
   func setRate(_ newRate: Float) {
-    mpvEngine.setPlaybackRate(Double(newRate))
+    if let cast = castController, cast.isPresenting {
+      cast.setRate(newRate)
+    } else {
+      engine.setPlaybackRate(Double(newRate))
+    }
     rate = newRate
   }
 
   func setVolume(_ value: Double) {
     let clamped = min(max(value, 0), 125)
-    mpvEngine.setVolume(clamped)
+    if let cast = castController, cast.isPresenting {
+      cast.setVolume(clamped)
+    } else {
+      engine.setVolume(clamped)
+    }
   }
 
   /// `UIScreen` parlaklığı; ana iş parçacığında uygulanır.
@@ -504,7 +795,7 @@ final class VideoPlayerController: ObservableObject {
   }
 
   func updateTracks(applyPreferences: Bool = false, skipSubtitleSelection: Bool = false) {
-    mpvEngine.reloadTrackList { [weak self] video, audio, subs, vid, aid, sid in
+    engine.reloadTrackList { [weak self] video, audio, subs, vid, aid, sid in
       guard let self else { return }
       self.videoTracks = video
       self.audioTracks = audio
@@ -515,24 +806,24 @@ final class VideoPlayerController: ObservableObject {
       guard applyPreferences else { return }
       let prefs = PlaybackTrackPreferences.load()
       if let pick = PlaybackTrackPreferences.pickVideo(from: video, prefs: prefs) {
-        self.mpvEngine.selectVideoTrack(id: pick)
+        self.engine.selectVideoTrack(id: pick)
         self.currentVideoTrackId = pick
       }
       if let pick = PlaybackTrackPreferences.pickAudio(from: audio, prefs: prefs) {
-        self.mpvEngine.selectAudioTrack(id: pick)
+        self.engine.selectAudioTrack(id: pick)
         self.currentAudioTrackId = pick
       }
       if !skipSubtitleSelection,
          let pick = PlaybackTrackPreferences.pickSubtitle(from: subs, prefs: prefs)
       {
-        self.mpvEngine.selectSubtitleTrack(id: pick)
+        self.engine.selectSubtitleTrack(id: pick)
         self.currentSubtitleTrackId = pick
       }
     }
   }
 
   func selectVideoTrack(id: Int) {
-    mpvEngine.selectVideoTrack(id: id)
+    engine.selectVideoTrack(id: id)
     currentVideoTrackId = id
     if let opt = videoTracks.first(where: { $0.id == id }) {
       PlaybackTrackPreferences.saveVideo(from: opt)
@@ -540,7 +831,7 @@ final class VideoPlayerController: ObservableObject {
   }
 
   func selectAudioTrack(id: Int) {
-    mpvEngine.selectAudioTrack(id: id)
+    engine.selectAudioTrack(id: id)
     currentAudioTrackId = id
     if let opt = audioTracks.first(where: { $0.id == id }) {
       PlaybackTrackPreferences.saveAudio(from: opt)
@@ -548,7 +839,7 @@ final class VideoPlayerController: ObservableObject {
   }
 
   func selectSubtitleTrack(id: Int) {
-    mpvEngine.selectSubtitleTrack(id: id)
+    engine.selectSubtitleTrack(id: id)
     currentSubtitleTrackId = id
     if let opt = subtitleTracks.first(where: { $0.id == id }) {
       PlaybackTrackPreferences.saveSubtitle(from: opt)
@@ -584,7 +875,7 @@ final class VideoPlayerController: ObservableObject {
       let name = file.lastPathComponent
       let select = name == selectedName
       didSelect = didSelect || select
-      mpvEngine.addExternalSubtitle(filePath: file.path, title: name, select: select)
+      engine.addExternalSubtitle(filePath: file.path, title: name, select: select)
     }
     return didSelect
   }
@@ -595,11 +886,11 @@ final class VideoPlayerController: ObservableObject {
     let name = saved.lastPathComponent
     // If a track with the same name was added before, drop the old one (file was overwritten).
     if let existing = subtitleTracks.first(where: { $0.isExternal && $0.title == name }) {
-      mpvEngine.removeExternalSubtitle(id: existing.id)
+      engine.removeExternalSubtitle(id: existing.id)
     }
     ImportedSubtitleStore.setSelectedFileName(name, for: key)
     importedSubtitleFiles = ImportedSubtitleStore.subtitleFiles(for: key)
-    mpvEngine.addExternalSubtitle(filePath: saved.path, title: name, select: true)
+    engine.addExternalSubtitle(filePath: saved.path, title: name, select: true)
     updateTracks()
   }
 
@@ -609,29 +900,65 @@ final class VideoPlayerController: ObservableObject {
     ImportedSubtitleStore.removeFile(url, for: key)
     importedSubtitleFiles = ImportedSubtitleStore.subtitleFiles(for: key)
     if let existing = subtitleTracks.first(where: { $0.isExternal && $0.title == name }) {
-      mpvEngine.removeExternalSubtitle(id: existing.id)
+      engine.removeExternalSubtitle(id: existing.id)
       updateTracks()
     }
   }
 
   func applySubtitleAppearanceSettings(_ settings: SubtitleAppearanceSettings) {
     SubtitleAppearancePersistence.save(settings)
-    mpvEngine.applySubtitleAppearanceFromSettings(settings)
-    mpvEngine.setSubDelay(seconds: settings.delaySeconds)
+    engine.applySubtitleAppearanceFromSettings(settings)
+    engine.setSubDelay(seconds: settings.delaySeconds)
   }
 
   func applySubtitleDelaySeconds(_ seconds: Double) {
-    mpvEngine.setSubDelay(seconds: seconds)
+    engine.setSubDelay(seconds: seconds)
+  }
+
+  /// UHF akışı: remux'u kur, hazır olunca completion(true) — UI sistem seçiciyi o anda açar.
+  func prepareAirPlay(completion: @escaping (Bool) -> Void) {
+    guard let cast = castController else {
+      completion(false)
+      return
+    }
+    let ks = engine
+    guard needsAirPlayPreparation else {
+      completion(true)  // native yol ya da cast zaten sunumda — seçici direkt açılabilir
+      return
+    }
+    guard let request = currentLoadRequest else {
+      completion(false)
+      return
+    }
+    // Resume edilmiş içerikte ilk zaman tiki henüz gelmediyse motor 0 raporlar;
+    // istekteki başlangıç saniyesine düş (cast 0:00'dan başlamasın).
+    let at: TimeInterval
+    if ks.isPlaybackEstablished, ks.position > 0.5 {
+      at = ks.position
+    } else {
+      at = request.startSeconds ?? 0
+    }
+    let content = CastController.Content(
+      url: request.url,
+      isLive: request.isLiveStream,
+      userAgent: request.userAgent,
+      startAt: request.isLiveStream ? 0 : at,
+      knownDuration: ks.duration,
+      nativelyPlayable: false,
+      startPaused: ks.isPlaybackEstablished && ks.isPaused
+    )
+    cast.startRemuxCast(content: content, completion: completion)
   }
 
   func applyAudioDelaySeconds(_ seconds: Double) {
     AudioDelayPersistence.save(seconds)
-    mpvEngine.setAudioDelay(seconds: seconds)
+    engine.setAudioDelay(seconds: seconds)
   }
 
   func teardown() {
     if isTornDown { return }
     isTornDown = true
+    Self.unregister(self)
     seriesEpisodeOnPrevious = nil
     seriesEpisodeOnNext = nil
     MPRemoteCommandCenter.shared().previousTrackCommand.isEnabled = false
@@ -656,20 +983,37 @@ final class VideoPlayerController: ObservableObject {
     cancelNowPlayingArtworkFetch(clearImage: true)
     pendingLoadRequest = nil
     let wasActivated = audioSessionActivated
+    let leaseToRelease = audioSessionLease
     audioSessionActivated = false
-    if wasActivated {
+    audioSessionLease = nil
+    if wasActivated, let leaseToRelease {
       // Non-mixable .playback oturumu açık bırakılırsa, oynatıcı kapandıktan sonra
       // kestiğimiz uygulama (Music/Spotify) hiçbir zaman devam sinyali alamaz.
       // mpv'nin audio unit'i async dispose olduğundan kısa bir gecikmeyle kapat.
+      // A newer controller may claim the process-wide session during this delay;
+      // the lease guard then turns this teardown into a no-op.
       DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) {
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        Self.deactivateAudioSessionIfCurrent(leaseToRelease)
       }
     }
     seekRequestStartedAt = nil
     seekSourceTimeMs = nil
     seekLatencyMs = -1
     playbackFailureMessage = nil
-    mpvEngine.dispose()
+    // Native AirPlay belongs to KSPlayer's screen-scoped AVPlayer. Capture the
+    // selected route before disposing that engine so the next screen can promote
+    // its item to the long-lived cast player instead of continuing audio-only.
+    if castController?.isEngaged != true,
+       engine.isExternalPlaybackActive || isAirPlayPlaybackActive {
+      CastController.markNativeExternalPlaybackForNextLoad()
+    }
+    // Keep one external-playback AVPlayer alive while the user leaves a series
+    // and opens a live channel. Recreating it here flaps the route and strands
+    // the next FFmpeg stream as audio-only AirPlay.
+    if castController?.parkForCrossScreenHandoff(owner: castOwnerToken) != true {
+      castController?.dispose()
+    }
+    engine.dispose()
   }
 
   private func markSeekRequestStart() {
@@ -702,15 +1046,29 @@ final class VideoPlayerController: ObservableObject {
     let durationSec = max(Double(durationMs) / 1000.0, 0)
     let elapsedSec = max(Double(timeMs) / 1000.0, 0)
 
+    // On live channels with EPG, show the programme as the title and the channel
+    // as the artist; otherwise the channel/content title.
+    let displayTitle: String
+    let displayArtist: String
+    if p.isLive, let programme = p.programmeTitle, !programme.isEmpty {
+      displayTitle = programme
+      displayArtist = p.title
+    } else {
+      displayTitle = p.title
+      displayArtist = p.subtitle ?? "Another IPTV Player"
+    }
+
     var info: [String: Any] = [
-      MPMediaItemPropertyTitle: p.title,
-      MPMediaItemPropertyArtist: p.subtitle ?? "Another IPTV Player",
+      MPMediaItemPropertyTitle: displayTitle,
+      MPMediaItemPropertyArtist: displayArtist,
       MPMediaItemPropertyPlaybackDuration: durationSec,
       MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsedSec,
       MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? Double(rate) : 0.0,
       MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.video.rawValue,
     ]
     if p.isLive {
+      // Keep the system LIVE badge and no scrubber — do not synthesize a duration
+      // from the programme interval (it would misrepresent the transport).
       info[MPNowPlayingInfoPropertyIsLiveStream] = true
       info[MPMediaItemPropertyPlaybackDuration] = 0
     }
@@ -774,14 +1132,14 @@ final class VideoPlayerController: ObservableObject {
 
     center.playCommand.isEnabled = true
     let t1 = center.playCommand.addTarget { [weak self] _ in
-      self?.mpvEngine.play()
+      self?.routedPlay()
       return .success
     }
     remoteCommandTargets.append((center.playCommand, t1))
 
     center.pauseCommand.isEnabled = true
     let t2 = center.pauseCommand.addTarget { [weak self] _ in
-      self?.mpvEngine.pause()
+      self?.routedPause()
       return .success
     }
     remoteCommandTargets.append((center.pauseCommand, t2))
@@ -799,8 +1157,7 @@ final class VideoPlayerController: ObservableObject {
             let e = event as? MPChangePlaybackPositionCommandEvent,
             self.durationMs > 0
       else { return .commandFailed }
-      self.markSeekRequestStart()
-      self.mpvEngine.seek(to: e.positionTime)
+      self.seekAbsolute(to: e.positionTime)
       return .success
     }
     remoteCommandTargets.append((center.changePlaybackPositionCommand, tSeek))
@@ -850,15 +1207,33 @@ final class VideoPlayerController: ObservableObject {
   ) {
     seriesEpisodeOnPrevious = canPrevious ? onPrevious : nil
     seriesEpisodeOnNext = canNext ? onNext : nil
+    episodeNavCanPrevious = canPrevious && onPrevious != nil
+    episodeNavCanNext = canNext && onNext != nil
+    episodeNavSwapSkip = swapSkipForNav
+    applyEpisodeNavCommandEnablement()
+  }
+
+  private func applyEpisodeNavCommandEnablement() {
     let center = MPRemoteCommandCenter.shared()
-    let hasEpisodeNav = (canPrevious && onPrevious != nil) || (canNext && onNext != nil)
+    let hasEpisodeNav = episodeNavCanPrevious || episodeNavCanNext
     // iOS hides previousTrack/nextTrack buttons when skipForward/skipBackward are enabled.
     // For series & live TV: swap skip → prev/next. For movies: keep skip enabled.
-    let disableSkip = swapSkipForNav && hasEpisodeNav
+    let disableSkip = episodeNavSwapSkip && hasEpisodeNav
     center.skipForwardCommand.isEnabled = !disableSkip
     center.skipBackwardCommand.isEnabled = !disableSkip
-    center.previousTrackCommand.isEnabled = swapSkipForNav && canPrevious && onPrevious != nil
-    center.nextTrackCommand.isEnabled = swapSkipForNav && canNext && onNext != nil
+    center.previousTrackCommand.isEnabled = episodeNavSwapSkip && episodeNavCanPrevious
+    center.nextTrackCommand.isEnabled = episodeNavSwapSkip && episodeNavCanNext
+  }
+
+  /// `KSPlayerLayer.deinit` koşulsuz `removeTarget(nil)` çağırır ve Now Playing'i
+  /// siler — her layer yıkımından (yeni load, cast devri) sonra kendi komutlarımız
+  /// ve Now Playing yeniden kurulmalı; aksi halde kilit ekranı ilk zap'tan sonra ölür.
+  private func reinstallRemoteCommands() {
+    guard !remoteCommandTargets.isEmpty else { return }
+    removeRemoteCommands()
+    setupRemoteCommands()
+    applyEpisodeNavCommandEnablement()
+    updateNowPlayingInfo(force: true)
   }
 
   private func removeRemoteCommands() {

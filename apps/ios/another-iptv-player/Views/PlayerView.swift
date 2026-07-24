@@ -11,6 +11,23 @@ struct LiveChannelCategorySection: Identifiable, Equatable {
     let streams: [DBLiveStream]
 }
 
+extension LiveChannelCategorySection {
+    /// Full live queue + per-category sections for the current Xtream playlist.
+    /// Players opened outside the main channel list (EPG guide, programme sheet)
+    /// use this so prev/next channel and the channel side panel keep working instead
+    /// of being disabled by a single-item queue.
+    @MainActor
+    static func xtreamLiveQueue() -> (queue: [DBLiveStream], sections: [LiveChannelCategorySection]) {
+        let store = PlaylistContentStore.shared
+        let sections = store.liveCategories.compactMap { cat -> LiveChannelCategorySection? in
+            let streams = store.liveStreamsByCategoryId[cat.id]?.map(\.stream) ?? []
+            guard !streams.isEmpty else { return nil }
+            return LiveChannelCategorySection(id: cat.id, title: cat.name, streams: streams)
+        }
+        return (sections.flatMap(\.streams), sections)
+    }
+}
+
 /// Kanal panelinin Xtream `DBLiveStream` veya M3U `DBM3UChannel` gibi farklı kaynaklarla çalışabilmesi için
 /// hafif bir görüntüleme modelidir. Tıklamalar item `id`'sini callback'e verir; aranması/akışın seçilmesi
 /// çağıranın sorumluluğundadır.
@@ -40,6 +57,12 @@ struct PlayerView: View {
     var seriesId: String? = nil
     var resumeTimeMs: Int? = nil
     var containerExtension: String? = nil
+    /// M3U kanal bazlı User-Agent (#EXTVLCOPT / #KODIPROP); motora load'da geçirilir.
+    var userAgent: String? = nil
+    /// EPG lookup key for the live channel; drives the in-player now-playing strip.
+    var epgChannelKey: String? = nil
+    /// Catch-up playback must not write watch history (would overwrite the live row).
+    var suppressWatchHistory: Bool = false
 
     var canGoToPreviousEpisode: Bool = false
     var canGoToNextEpisode: Bool = false
@@ -76,6 +99,9 @@ struct PlayerView: View {
             seriesId: seriesId,
             resumeTimeMs: resumeTimeMs,
             containerExtension: containerExtension,
+            userAgent: userAgent,
+            epgChannelKey: epgChannelKey,
+            suppressWatchHistory: suppressWatchHistory,
             isFavorite: isFavorite,
             onToggleFavorite: onToggleFavorite,
             canGoToPreviousEpisode: canGoToPreviousEpisode,
@@ -112,6 +138,9 @@ private struct PlayerViewImpl: View {
     var seriesId: String? = nil
     var resumeTimeMs: Int? = nil
     var containerExtension: String? = nil
+    var userAgent: String? = nil
+    var epgChannelKey: String? = nil
+    var suppressWatchHistory: Bool = false
 
     /// Opsiyonel favori butonu — yalnız ikisi de set ise topChrome'da gösterilir.
     var isFavorite: Bool? = nil
@@ -142,8 +171,19 @@ private struct PlayerViewImpl: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.playerOverlayDismiss) private var playerOverlayDismiss
+    @Environment(\.playerOverlayMode) private var overlayMode
+    @Environment(\.playerOverlayPresentationID) private var overlayPresentationID
+    @Environment(\.playerOverlayMinimize) private var playerOverlayMinimize
+    @Environment(\.playerOverlayExpand) private var playerOverlayExpand
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.epgSnapshot) private var epgSnapshot
+
+    /// Current programme for the live channel, if EPG data is available.
+    private var currentNowNext: EPGNowNext? {
+        guard isLiveStream, let key = epgChannelKey else { return nil }
+        return epgSnapshot?[key]
+    }
 
     @State private var showControls = true
     @State private var timer: Timer?
@@ -164,6 +204,8 @@ private struct PlayerViewImpl: View {
     @State private var showSubtitleAppearance = false
     @State private var isFastForwarding = false
     @State private var pipManualSignal = 0
+    @State private var isPreparingAirPlay = false
+    @State private var airPlayPickerSignal = 0
     @State private var bitrateSamples: [(time: Date, bps: Double)] = []
     @State private var aspectToastText: String?
     @State private var aspectToastToken: UInt64 = 0
@@ -183,6 +225,19 @@ private struct PlayerViewImpl: View {
 
     @State private var interactiveDismissAxis: InteractiveDismissAxis?
     @State private var interactiveDismissOffset: CGSize = .zero
+
+    /// Mini player morph state. `miniProgress` drives the whole full↔mini transform
+    /// (0 = fullscreen, 1 = docked mini card). `miniCorner` is the docked corner; the live
+    /// drag translation lives in `cardDrag` (isolated so it doesn't re-render the body).
+    @State private var miniProgress: CGFloat = 0
+    @State private var miniCorner: MiniPlayerCorner = .bottomTrailing
+    /// Live docked-card drag translation. Held via `@State` so the body does NOT observe it —
+    /// only `MiniCardDragLayer` does — keeping the drag from re-rendering the video subtree.
+    @State private var cardDrag = MiniCardDragModel()
+    /// Invalidates a pending "reveal chrome after expand" if the mode changes again first.
+    @State private var expandControlsGeneration = 0
+
+    private var isMiniCommitted: Bool { overlayMode == .mini }
 
     /// İki parmak pinch: 1x–4x; yakınlaştırınca tek parmakla sürükleyerek kadraj kaydırılabilir.
     /// Pinch & pan UIKit tarafında (`PlayerMediaKitTouchContainerView`); koordinat sistemi
@@ -298,9 +353,21 @@ private struct PlayerViewImpl: View {
     private var isCenterTransportLoading: Bool {
         if hasPlaybackFailure { return false }
         if player.state == .ended { return false }
-        if !player.mpvEngine.isReady { return true }
+        if player.isCastPresenting {
+            // The phone engine is intentionally stopped throughout a remux cast;
+            // consulting it would leave the spinner visible forever even while
+            // the TV is playing. CastController is the active presentation source.
+            if player.state == .buffering { return true }
+            return player.castController?.isPlaybackEstablished != true
+        }
+        // Native AVPlayer external playback can report its phone-side layer as
+        // buffering/not-established even though the Apple TV is already playing.
+        // Once video external playback is active, that local layer must not drive
+        // an endless spinner on the handset.
+        if player.isAirPlayPlaybackActive { return false }
+        if !player.engine.isReady { return true }
         if player.state == .buffering { return true }
-        if !player.mpvEngine.isPlaybackEstablished { return true }
+        if !player.engine.isPlaybackEstablished { return true }
         return false
     }
 
@@ -418,7 +485,9 @@ private struct PlayerViewImpl: View {
     private var playbackDebugCodecText: String {
         let hw = player.hwdecCurrent.isEmpty ? "sw" : player.hwdecCurrent
         let codec = player.videoCodecName.isEmpty ? "--" : player.videoCodecName
-        return "DEC \(hw) \(codec)"
+        let audio = player.audioCodecName.isEmpty ? "--" : player.audioCodecName
+        let airPlay = player.isAirPlayVideoCapable ? "AP✓" : "AP✗"
+        return "DEC \(hw) \(codec)/\(audio) \(airPlay)"
     }
 
     private var playbackDebugSeekText: String {
@@ -445,32 +514,113 @@ private struct PlayerViewImpl: View {
         GeometryReader { geo in
             let containerSize = geo.size
             let outerSafeAreaInsets = geo.safeAreaInsets
+            let clampedProgress = min(max(miniProgress, 0), 1)
+            let card = miniCardRect(container: containerSize, safeArea: outerSafeAreaInsets)
+            let t = miniTransform(progress: clampedProgress, card: card, container: containerSize)
             ZStack {
-                Color.black
-                    .ignoresSafeArea()
+                // The whole mini-card group is repositioned by the live drag inside
+                // `MiniCardDragLayer`, which is the ONLY view that re-renders while dragging —
+                // the masked/scaled video below is evaluated once and merely re-offset, so the
+                // picture is never re-processed (which used to glitch the video mid-drag).
+                MiniCardDragLayer(model: cardDrag) {
+                    ZStack {
+                        // Card shadow, a cheap standalone rounded rect tracking the visible video
+                        // card through the whole morph. The masked video layer never carries a
+                        // shadow itself — re-shadowing that full-screen layer each frame as the
+                        // mask animates caused judder/tremble. The opaque video lands on top of
+                        // this fill; only the shadow spills out.
+                        if clampedProgress > 0.01 {
+                            let visibleCard = CGSize(width: t.maskSize.width * t.scale, height: t.maskSize.height * t.scale)
+                            RoundedRectangle(
+                                cornerRadius: MiniPlayerMetrics.cornerRadius * min(clampedProgress * 2.5, 1),
+                                style: .continuous
+                            )
+                            .fill(Color.black)
+                            .frame(width: visibleCard.width, height: visibleCard.height)
+                            .shadow(color: .black.opacity(0.38 * Double(clampedProgress)),
+                                    radius: 22 * clampedProgress, x: 0, y: 8 * clampedProgress)
+                            .position(
+                                x: containerSize.width / 2 + t.offset.width + interactiveDismissOffset.width,
+                                y: containerSize.height / 2 + t.offset.height + interactiveDismissOffset.height
+                            )
+                            .allowsHitTesting(false)
+                        }
 
-                playerChromeAndVideo(outerSafeAreaInsets: outerSafeAreaInsets)
+                        // Player content, transformed toward the floating mini card as
+                        // `miniProgress` grows. The mask crops the letterbox down to the card;
+                        // scale/offset land the video on the card center. View identity is stable
+                        // so playback never restarts.
+                        ZStack {
+                            Color.black
+                                .ignoresSafeArea()
+
+                            playerChromeAndVideo(outerSafeAreaInsets: outerSafeAreaInsets)
+                        }
+                        .background(Color.black)
+                        .frame(width: containerSize.width, height: containerSize.height)
+                        .mask(
+                            RoundedRectangle(cornerRadius: t.cornerRadius, style: .continuous)
+                                .frame(width: t.maskSize.width, height: t.maskSize.height)
+                        )
+                        .scaleEffect(t.scale)
+                        .offset(
+                            x: t.offset.width + interactiveDismissOffset.width,
+                            y: t.offset.height + interactiveDismissOffset.height
+                        )
+                        .opacity(edgeBackOpacity(containerSize: containerSize))
+                        .simultaneousGesture(
+                            interactiveDismissDragGesture(
+                                containerSize: containerSize,
+                                safeAreaTop: geo.safeAreaInsets.top,
+                                safeAreaBottom: geo.safeAreaInsets.bottom
+                            )
+                        )
+                        // Once docked, stop the (visually card-sized but layout-full-screen)
+                        // content from swallowing touches: SwiftUI `.mask` crops rendering only,
+                        // not the hit region. `isMiniCommitted` only flips at commit, so the
+                        // interactive pull-down morph is unaffected; card taps go to the chrome.
+                        .allowsHitTesting(!isMiniCommitted)
+
+                        // Floating mini card chrome (unscaled), tappable only once docked.
+                        if clampedProgress > 0.01 {
+                            MiniPlayerChrome(
+                                player: player,
+                                cornerRadius: MiniPlayerMetrics.cornerRadius,
+                                isLoading: isCenterTransportLoading,
+                                onExpand: { playerOverlayExpand?() },
+                                onClose: { performPlayerDismiss() },
+                                onDragChanged: { translation in
+                                    handleMiniCardDragChanged(
+                                        translation: translation,
+                                        card: card, container: containerSize
+                                    )
+                                },
+                                onDragEnded: { translation, velocity in
+                                    handleMiniCardDragEnded(
+                                        translation: translation, velocity: velocity,
+                                        container: containerSize, safeArea: outerSafeAreaInsets
+                                    )
+                                }
+                            )
+                            .frame(width: card.width, height: card.height)
+                            .position(x: card.midX, y: card.midY)
+                            .opacity(miniChromeOpacity)
+                            .allowsHitTesting(isMiniCommitted)
+                        }
+                    }
+                }
             }
-            .background(Color.black)
             .frame(width: containerSize.width, height: containerSize.height)
-            .offset(interactiveDismissOffset)
-            .opacity(interactiveDismissOpacity(containerSize: containerSize))
-            .simultaneousGesture(
-                interactiveDismissDragGesture(
-                    containerSize: containerSize,
-                    safeAreaTop: geo.safeAreaInsets.top,
-                    safeAreaBottom: geo.safeAreaInsets.bottom
-                )
-            )
             // iPad / geniş yatay düzende durum çubuğunu kontrollerle aç-kapa yapmak üst güvenli alanı
             // değiştirir; GeometryReader yüksekliği sıçrar. Telefonda (compact) eski davranış korunur.
-            .statusBarHidden(horizontalSizeClass == .compact ? !showControls : true)
+            // Mini kartta durum çubuğu her zaman görünür.
+            .statusBarHidden(statusBarHiddenInCurrentMode)
         .onAppear {
             log.info("Opening player: \(title, privacy: .public)")
             resetTimer()
             player.setupAudioHandler()
-            // Bir sonraki run loop: `MPVPlayerPlaybackContainerView` `viewDidLoad` → `configure` sırası SwiftUI sürümüne göre değişebilir;
-            // aynı tick’te `play` önce gelirse `mpv` henüz yokken yükleme atlanabilir. Ayrıca ilk layout ana kuyruğu rahatlatır.
+            // Defer to the next run loop: the KSPlayer surface's view setup and
+            // `play` can race within the same tick. First layout also relieves the main queue.
             DispatchQueue.main.async {
                 applyPlaybackTransitionIfNeeded()
                 applySelectedAspectMode(force: true)
@@ -482,6 +632,14 @@ private struct PlayerViewImpl: View {
             }
         }
         .onChange(of: playbackIdentity) { _, _ in
+            cancelAutoAdvanceCountdown(resetEndHandling: true)
+            applyPlaybackTransitionIfNeeded()
+        }
+        .onChange(of: overlayPresentationID) { _, _ in
+            // The overlay deliberately preserves PlayerView identity so an active
+            // AirPlay AVPlayer survives a source switch. Observe the host's explicit
+            // presentation revision as a reliable handoff trigger; the identity guard
+            // inside applyPlaybackTransitionIfNeeded prevents duplicate loads.
             cancelAutoAdvanceCountdown(resetEndHandling: true)
             applyPlaybackTransitionIfNeeded()
         }
@@ -502,10 +660,10 @@ private struct PlayerViewImpl: View {
             }
         }
         .onChange(of: playbackPresentationKey) { _, _ in
-            player.setPlaybackPresentation(
-                PlaybackPresentation(title: title, subtitle: subtitle,
-                                     artworkURL: artworkURL, isLive: isLiveStream)
-            )
+            player.setPlaybackPresentation(makePresentation())
+        }
+        .onChange(of: currentNowNext?.now?.id) { _, _ in
+            player.setPlaybackPresentation(makePresentation())
         }
         .onDisappear {
             timer?.invalidate()
@@ -543,6 +701,34 @@ private struct PlayerViewImpl: View {
                 startAutoAdvanceCountdownIfEligible()
             } else {
                 cancelAutoAdvanceCountdown(resetEndHandling: true)
+            }
+        }
+        .onChange(of: overlayMode) { _, newMode in
+            expandControlsGeneration &+= 1
+            let gen = expandControlsGeneration
+            switch newMode {
+            case .mini:
+                // The gesture path already animated `miniProgress`; here only settle chrome.
+                // Covers any external minimize too.
+                timer?.invalidate()
+                if showControls { showControls = false }
+                if miniProgress < 0.999 {
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { miniProgress = 1 }
+                }
+            case .fullscreen:
+                cardDrag.offset = .zero
+                cardDrag.dismissOpacity = 1
+                // Keep the (heavy) fullscreen chrome hidden during the grow so its layout doesn't
+                // run every animation frame and make the expand judder. Near-critical damping
+                // (0.96) also avoids a scale overshoot at the end. Reveal chrome once settled.
+                timer?.invalidate()
+                showControls = false
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.96)) { miniProgress = 0 }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.44) {
+                    guard gen == expandControlsGeneration else { return }
+                    withAnimation(.easeInOut(duration: 0.2)) { showControls = true }
+                    resetTimer()
+                }
             }
         }
         }
@@ -660,12 +846,12 @@ private struct PlayerViewImpl: View {
         if let initialStartSeconds {
             log.info("Starting playback with mpv start option: \(initialStartSeconds, privacy: .public)s")
         }
-        player.play(url: url, startSeconds: initialStartSeconds, isLiveStream: isLiveStream)
-        applySelectedAspectMode(force: true)
-        player.setPlaybackPresentation(
-            PlaybackPresentation(title: title, subtitle: subtitle,
-                                 artworkURL: artworkURL, isLive: isLiveStream)
+        player.play(
+            url: url, startSeconds: initialStartSeconds, isLiveStream: isLiveStream,
+            userAgent: userAgent
         )
+        applySelectedAspectMode(force: true)
+        player.setPlaybackPresentation(makePresentation())
         applySeriesEpisodeRemoteCommands()
     }
 
@@ -694,7 +880,8 @@ private struct PlayerViewImpl: View {
 
     private func applySpeedHoldBegan() {
         guard speedUpOnLongPress else { return }
-        guard videoZoomScale <= 1.02, !isScrubbing else { return }
+        guard player.isPlaying, videoZoomScale <= 1.02, !isScrubbing,
+              interactiveDismissAxis == nil else { return }
         resetTimer()
         withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
             isFastForwarding = true
@@ -791,13 +978,208 @@ private struct PlayerViewImpl: View {
         )
     }
 
-    private func interactiveDismissOpacity(containerSize: CGSize) -> Double {
+    /// Fade only for the horizontal edge-back swipe. The pull-down axis no longer fades;
+    /// it morphs into the mini card instead.
+    private func edgeBackOpacity(containerSize: CGSize) -> Double {
         let w = max(containerSize.width, 1)
-        let h = max(containerSize.height, 1)
         let vx = Double(abs(interactiveDismissOffset.width)) / Double(w)
-        let vy = Double(max(0, interactiveDismissOffset.height)) / Double(h)
-        let combined = min(0.55, vx * 0.32 + vy * 0.5)
+        let combined = min(0.55, vx * 0.32)
         return max(0.38, 1.0 - combined)
+    }
+
+    // MARK: - Mini player geometry & morph
+
+    /// Fullscreen chrome fades out over the first quarter of the minimize morph so the
+    /// controls don't ride the shrinking card.
+    private var fullChromeOpacity: Double {
+        Double(1 - min(max(miniProgress, 0) / 0.25, 1))
+    }
+
+    /// Mini card chrome fades in over the last third of the morph.
+    private var miniChromeOpacity: Double {
+        Double(max(0, min(1, (miniProgress - 0.65) / 0.35)))
+    }
+
+    private var statusBarHiddenInCurrentMode: Bool {
+        if isMiniCommitted { return false }
+        return horizontalSizeClass == .compact ? !showControls : true
+    }
+
+    /// Vertical finger travel that maps to a full minimize (before velocity projection).
+    private func pullDownDragDistance(container: CGSize) -> CGFloat {
+        max(container.height * 0.32, 180)
+    }
+
+    /// Rest frame of the mini card in the GeometryReader's coordinate space, for the
+    /// currently docked corner.
+    private func miniCardRect(container: CGSize, safeArea: EdgeInsets) -> CGRect {
+        let fitted = fittedVideoSize(in: container)
+        let aspect = fitted.height > 0 ? fitted.width / fitted.height : 16.0 / 9.0
+        // Reserve only the tab-bar height on compact widths. The home-indicator safe area is
+        // already contained within the tab bar's region here, so adding `safeArea.bottom` on top
+        // lifted the card well above the bar instead of resting it directly on top.
+        let bottomInset = isCompactWidth ? MiniPlayerMetrics.tabBarAllowance : 0
+        // Bound the card height to the free vertical space so it always floats fully on-screen
+        // above the tab bar (matters for portrait video in a short/landscape container).
+        let maxHeight = max(
+            80,
+            min(container.height * 0.42,
+                container.height - safeArea.top - bottomInset - MiniPlayerMetrics.margin * 2)
+        )
+        let size = MiniPlayerMetrics.cardSize(container: container, videoAspect: aspect, maxHeight: maxHeight)
+        let origin = MiniPlayerMetrics.cardOrigin(
+            corner: miniCorner, size: size, container: container,
+            safeArea: safeArea, bottomInset: bottomInset
+        )
+        return CGRect(origin: origin, size: size)
+    }
+
+    /// Scale / offset / mask / corner radius for the player content at morph progress `p`.
+    /// The transform lands the *video* (not the letterboxed screen) onto the card. The mask
+    /// starts generously oversized so the fullscreen state never clips the safe-area bleed.
+    private func miniTransform(
+        progress p: CGFloat, card: CGRect, container: CGSize
+    ) -> (scale: CGFloat, offset: CGSize, maskSize: CGSize, cornerRadius: CGFloat) {
+        let fitted = fittedVideoSize(in: container)
+        let fh = max(fitted.height, 1)
+        // Minimize must never scale content UP. Clamping guards the degenerate window where
+        // .center aspect mode reports a 1×1 fitted size before the stream dimensions arrive.
+        let targetScale = min(card.height / fh, 1)
+        let scale = miniLerp(1, targetScale, p)
+
+        // Oversized at p=0 (no clip); shrinks to the card slot (in pre-scale points) at p=1.
+        let bleed: CGFloat = 160
+        let maskSize = CGSize(
+            width: miniLerp(container.width + bleed * 2, card.width / max(targetScale, 0.01), p),
+            height: miniLerp(container.height + bleed * 2, card.height / max(targetScale, 0.01), p)
+        )
+
+        let containerCenter = CGPoint(x: container.width / 2, y: container.height / 2)
+        let offset = CGSize(
+            width: miniLerp(0, card.midX - containerCenter.x, p),
+            height: miniLerp(0, card.midY - containerCenter.y, p)
+        )
+        // Corner radius is applied pre-scale, so divide by scale to keep it visually constant.
+        let cornerRadius = MiniPlayerMetrics.cornerRadius * min(p * 2.5, 1) / max(scale, 0.01)
+        return (scale, offset, maskSize, cornerRadius)
+    }
+
+    private func nearestCorner(toCenter c: CGPoint, container: CGSize) -> MiniPlayerCorner {
+        let left = c.x < container.width / 2
+        let top = c.y < container.height / 2
+        switch (top, left) {
+        case (true, true): return .topLeading
+        case (true, false): return .topTrailing
+        case (false, true): return .bottomLeading
+        case (false, false): return .bottomTrailing
+        }
+    }
+
+    /// Commit the pull-down gesture into the mini card, seeding the spring with the
+    /// gesture's exit velocity so a flick feels continuous. Falls back to the old
+    /// slide-off dismiss when there is no overlay host to minimize into.
+    private func commitMinimize(velocity: CGFloat, distance: CGFloat, containerHeight: CGFloat) {
+        guard let minimize = playerOverlayMinimize else {
+            withAnimation(.easeIn(duration: 0.18)) {
+                interactiveDismissOffset = CGSize(width: 0, height: containerHeight + 60)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                performPlayerDismiss()
+            }
+            return
+        }
+        timer?.invalidate()
+        showControls = false
+        let remaining = max(1, (1 - miniProgress) * distance)
+        // Seed the spring with the gesture's normalized velocity (clamped so a release near
+        // the end doesn't produce an absurd initial velocity).
+        let springV = min(max(Double(velocity) / Double(remaining), -25), 25)
+        withAnimation(.interpolatingSpring(stiffness: 320, damping: 30, initialVelocity: springV)) {
+            miniProgress = 1
+        }
+        minimize()
+    }
+
+    private func handleMiniCardDragChanged(
+        translation: CGSize, card: CGRect, container: CGSize
+    ) {
+        // Mutate the isolated model directly — the body does not observe it, so only
+        // `MiniCardDragLayer` re-renders and the video is left untouched. Offset and fade are set
+        // together so the whole card group moves and dims in the same tick (no lockstep drift).
+        cardDrag.offset = translation
+        let center = CGPoint(x: card.midX + translation.width, y: card.midY + translation.height)
+        let frac = MiniPlayerDismissPolicy.offscreenFraction(
+            center: center, card: card.size, container: container
+        )
+        cardDrag.dismissOpacity = MiniPlayerDismissPolicy.liveOpacity(offscreenFraction: frac)
+    }
+
+    private func handleMiniCardDragEnded(
+        translation: CGSize, velocity: CGSize, container: CGSize, safeArea: EdgeInsets
+    ) {
+        let card = miniCardRect(container: container, safeArea: safeArea)
+        let draggedCenter = CGPoint(
+            x: card.midX + translation.width,
+            y: card.midY + translation.height
+        )
+
+        // Dismiss ONLY when the card has actually been dragged out of the app — half of it past a
+        // left, right, or bottom edge at the moment of release. This is position-only on purpose:
+        // a quick flick that doesn't physically leave the screen must re-dock, not close (a fast
+        // horizontal swipe from a top corner used to close via velocity projection). The top edge
+        // is excluded by `offscreenFraction`, so an upward drag always re-docks.
+        let liveFrac = MiniPlayerDismissPolicy.offscreenFraction(
+            center: draggedCenter, card: card.size, container: container
+        )
+        if liveFrac >= MiniPlayerDismissPolicy.releaseFraction {
+            dismissMiniCardOffscreen(
+                draggedCenter: draggedCenter, card: card, container: container
+            )
+            return
+        }
+
+        // Not dismissed → settle to the nearest corner. Velocity still projects the *corner*
+        // choice so a flick toward a corner snaps there, but it can no longer trigger a close.
+        let projected = CGPoint(
+            x: draggedCenter.x + velocity.width * 0.12,
+            y: draggedCenter.y + velocity.height * 0.12
+        )
+        let target = nearestCorner(toCenter: projected, container: container)
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+            miniCorner = target
+            cardDrag.offset = .zero
+            cardDrag.dismissOpacity = 1
+        }
+    }
+
+    /// Slide the card the rest of the way off whichever edge it has cleared most, fade it out,
+    /// then tear the player down. The exit direction continues the user's own drag rather than
+    /// snapping to a fixed side.
+    private func dismissMiniCardOffscreen(
+        draggedCenter: CGPoint, card: CGRect, container: CGSize
+    ) {
+        let halfW = card.width / 2
+        let offLeft = halfW - draggedCenter.x
+        let offRight = draggedCenter.x + halfW - container.width
+        let offBottom = draggedCenter.y + card.height / 2 - container.height
+
+        var exit = cardDrag.offset
+        // Continue off whichever edge the card has already left the most.
+        if offBottom >= max(offLeft, offRight) {
+            exit.height += container.height - draggedCenter.y + card.height
+        } else if offLeft >= offRight {
+            exit.width -= draggedCenter.x + card.width
+        } else {
+            exit.width += container.width - draggedCenter.x + card.width
+        }
+
+        withAnimation(.easeIn(duration: 0.2)) {
+            cardDrag.offset = exit
+            cardDrag.dismissOpacity = 0
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            performPlayerDismiss()
+        }
     }
 
     private func interactiveDismissDragGesture(
@@ -807,6 +1189,7 @@ private struct PlayerViewImpl: View {
     ) -> some Gesture {
         DragGesture(minimumDistance: 22, coordinateSpace: .local)
             .onChanged { value in
+                if isMiniCommitted { return }  // mini card handles its own gestures
                 if showTrackSettings || showSubtitleAppearance { return }
                 if videoZoomScale > 1.02 || isScrubbing { return }
 
@@ -831,7 +1214,8 @@ private struct PlayerViewImpl: View {
                             }
                         }
                     }
-                    if interactiveDismissAxis == nil, t.height > 18, t.height > abs(t.width) * 0.9,
+                    if interactiveDismissAxis == nil,
+                       FullscreenPlayerPullDownPolicy.shouldActivate(translation: t),
                        !interactiveDismissShouldSuppressPullDown(
                         start: start,
                         containerWidth: w,
@@ -852,7 +1236,12 @@ private struct PlayerViewImpl: View {
                         interactiveDismissOffset = CGSize(width: min(0, t.width), height: 0)
                     }
                 case .pullDown:
-                    interactiveDismissOffset = CGSize(width: 0, height: max(0, t.height))
+                    // Drive the mini-player morph directly with the finger.
+                    let dist = pullDownDragDistance(container: containerSize)
+                    miniProgress = FullscreenPlayerPullDownPolicy.progress(
+                        translationHeight: t.height,
+                        fullDistance: dist
+                    )
                 case .none:
                     break
                 }
@@ -862,6 +1251,7 @@ private struct PlayerViewImpl: View {
                 }
             }
             .onEnded { value in
+                if isMiniCommitted { return }
                 if showTrackSettings || showSubtitleAppearance {
                     resetInteractiveDismissTracking()
                     return
@@ -870,6 +1260,9 @@ private struct PlayerViewImpl: View {
                 let axis = interactiveDismissAxis
                 guard videoZoomScale <= 1.02, !isScrubbing else {
                     resetInteractiveDismissTrackingWithAnimation()
+                    if miniProgress > 0 {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) { miniProgress = 0 }
+                    }
                     return
                 }
 
@@ -885,31 +1278,12 @@ private struct PlayerViewImpl: View {
                 let cw = max(containerSize.width, 1)
                 let ch = max(containerSize.height, 1)
 
-                var shouldDismiss = false
+                interactiveDismissAxis = nil
                 switch axis {
                 case .edgeBack:
                     let progressed = layoutDirection == .leftToRight ? t.width : -t.width
                     let predProg = layoutDirection == .leftToRight ? pred.width : -pred.width
                     if progressed > min(cw * 0.28, 130) || predProg > 200 {
-                        shouldDismiss = true
-                    }
-                case .pullDown:
-                    if t.height > min(ch * 0.22, 150) || pred.height > 220 {
-                        shouldDismiss = true
-                    }
-                }
-
-                interactiveDismissAxis = nil
-                if shouldDismiss {
-                    switch axis {
-                    case .pullDown:
-                        withAnimation(.easeIn(duration: 0.18)) {
-                            interactiveDismissOffset = CGSize(width: 0, height: ch + 60)
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                            performPlayerDismiss()
-                        }
-                    case .edgeBack:
                         let targetX: CGFloat = layoutDirection == .leftToRight ? cw + 60 : -(cw + 60)
                         withAnimation(.easeIn(duration: 0.18)) {
                             interactiveDismissOffset = CGSize(width: targetX, height: 0)
@@ -917,10 +1291,37 @@ private struct PlayerViewImpl: View {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
                             performPlayerDismiss()
                         }
+                    } else {
+                        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+                            interactiveDismissOffset = .zero
+                        }
                     }
-                } else {
-                    withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
-                        interactiveDismissOffset = .zero
+                case .pullDown:
+                    // A flick can commit only after meaningful travel; tiny fast touch
+                    // drift must never throw the player into the mini card.
+                    let dist = pullDownDragDistance(container: containerSize)
+                    let vy = value.velocity.height
+                    let projected = FullscreenPlayerPullDownPolicy.progress(
+                        translationHeight: value.predictedEndTranslation.height,
+                        fullDistance: dist
+                    )
+                    let commitMini = FullscreenPlayerPullDownPolicy.shouldCommit(
+                        progress: miniProgress,
+                        projectedProgress: projected,
+                        velocityY: vy
+                    )
+                    if commitMini {
+                        commitMinimize(
+                            velocity: vy,
+                            distance: FullscreenPlayerPullDownPolicy.activeDistance(
+                                fullDistance: dist
+                            ),
+                            containerHeight: ch
+                        )
+                    } else {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                            miniProgress = 0
+                        }
                     }
                 }
             }
@@ -939,15 +1340,24 @@ private struct PlayerViewImpl: View {
                     .accessibilityHidden(true)
                     .zIndex(-10)
 
+                HiddenAirPlayRoutePicker(trigger: airPlayPickerSignal)
+                    .frame(width: 44, height: 44)
+                    .opacity(0.001)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                    .zIndex(-10)
+
                 ZStack {
-                    MPVPlayerPlaybackContainerView(
-                        mpvPlayer: player.mpvEngine,
-                        playbackBridge: player,
-                        manualPiPTrigger: pipManualSignal,
-                        pipEnabled: pipEnabled,
-                        continuePlayingInBackground: continuePlayingInBackground
-                    )
-                    .id("MPVPlaybackPiP")
+                    if let cast = player.castController {
+                        KSPlayerVideoSurface(
+                            engine: player.engine,
+                            cast: cast,
+                            manualPiPTrigger: pipManualSignal,
+                            pipEnabled: pipEnabled,
+                            continuePlayingInBackground: continuePlayingInBackground
+                        )
+                        .id("KSPlaybackSurface")
+                    }
                 }
                 .frame(width: fittedSize.width, height: fittedSize.height)
                 .scaleEffect(videoZoomScale, anchor: .center)
@@ -962,6 +1372,16 @@ private struct PlayerViewImpl: View {
                     isSeekDisabled: isCenterTransportLoading,
                     videoZoomScale: videoZoomScale,
                     isSpeedHoldActive: isFastForwarding,
+                    isSpeedHoldEnabled: speedUpOnLongPress
+                        && player.isPlaying
+                        && interactiveDismissAxis == nil,
+                    edgeSliderTrackSize: CGSize(
+                        width: isCompactWidth ? 52 : 64,
+                        height: isCompactWidth ? 160 : 180
+                    ),
+                    edgeSliderLeadingInset: 16 + outerSafeAreaInsets.leading,
+                    edgeSliderTrailingInset: 16 + outerSafeAreaInsets.trailing,
+                    interactionEnabled: miniProgress < 0.02,
                     onResetTimer: { resetTimer() },
                     onInvalidateTimer: { timer?.invalidate() },
                     onSpeedHoldBegan: { applySpeedHoldBegan() },
@@ -1008,6 +1428,7 @@ private struct PlayerViewImpl: View {
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
                     .transition(.opacity)
+                    .opacity(fullChromeOpacity)
                     .zIndex(29)
 
                     VStack(spacing: 0) {
@@ -1023,10 +1444,30 @@ private struct PlayerViewImpl: View {
                     .padding(.bottom, 12 + outerSafeAreaInsets.bottom)
                     // Kontroller güvenli alanın dışına çıkmasın — home indicator / app switcher
                     // jest bölgesinde scrub bar yanlışlıkla seek tetiklemesin diye alt safe area korunur.
-                    .simultaneousGesture(
-                        TapGesture().onEnded { resetTimer() }
-                    )
+                    .opacity(fullChromeOpacity)
+                    // Invisible (opacity ~0) but still-hittable fullscreen chrome must not
+                    // intercept taps during the minimize/expand morph — otherwise a stray tap
+                    // on the scaled-down invisible close/play button could tear down or pause.
+                    // Only interactive when essentially fullscreen.
+                    .allowsHitTesting(miniProgress < 0.02)
                     .zIndex(30)
+
+                    if isLiveStream, let programme = currentNowNext?.now {
+                        PlayerProgrammeStrip(programme: programme)
+                            .frame(maxWidth: 240, alignment: .leading)
+                            .clipped()
+                            .padding(.leading, 20 + outerSafeAreaInsets.leading)
+                            .padding(.bottom, 20 + outerSafeAreaInsets.bottom)
+                            .frame(
+                                maxWidth: .infinity,
+                                maxHeight: .infinity,
+                                alignment: .bottomLeading
+                            )
+                            .allowsHitTesting(false)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            .opacity(fullChromeOpacity)
+                            .zIndex(31)
+                    }
 
                     PlayerControlCenterStyleEdgeSliders(
                         player: player,
@@ -1036,6 +1477,8 @@ private struct PlayerViewImpl: View {
                     ) {
                         resetTimer()
                     }
+                    .opacity(fullChromeOpacity)
+                    .allowsHitTesting(miniProgress < 0.02)
                     .zIndex(32)
                 }
 
@@ -1051,6 +1494,7 @@ private struct PlayerViewImpl: View {
                         .padding(18)
                         .background(.black.opacity(0.35), in: Circle())
                         .allowsHitTesting(false)
+                        .opacity(fullChromeOpacity)
                         .zIndex(25)
                 }
 
@@ -1083,6 +1527,7 @@ private struct PlayerViewImpl: View {
                         Spacer()
                     }
                     .allowsHitTesting(false)
+                    .opacity(fullChromeOpacity)
                     .zIndex(33)
                 }
 
@@ -1108,6 +1553,7 @@ private struct PlayerViewImpl: View {
                             .combined(with: .scale(scale: 0.92, anchor: .top))
                             .combined(with: .move(edge: .top))
                     )
+                    .opacity(fullChromeOpacity)
                     .zIndex(40)
                     .allowsHitTesting(false)
                 }
@@ -1150,6 +1596,7 @@ private struct PlayerViewImpl: View {
                     // "İptal"e uzanırken butonlar 76pt ışınlanıyordu.
                     .animation(.easeInOut(duration: 0.2), value: showControls)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .opacity(fullChromeOpacity)
                     .zIndex(41)
                 }
 
@@ -1173,6 +1620,7 @@ private struct PlayerViewImpl: View {
                         Spacer()
                     }
                     .transition(.move(edge: .top).combined(with: .opacity))
+                    .opacity(fullChromeOpacity)
                     .zIndex(10)
                 }
 
@@ -1204,6 +1652,7 @@ private struct PlayerViewImpl: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(L("player.playback_error"))
                     .accessibilityValue(msg)
+                    .opacity(fullChromeOpacity)
                     .zIndex(25)
                 }
 
@@ -1276,7 +1725,25 @@ private struct PlayerViewImpl: View {
         )
     }
 
+    /// Builds the Now Playing presentation, folding in the current EPG programme
+    /// (used as the Now Playing title on live channels).
+    private func makePresentation() -> PlaybackPresentation {
+        let programme = currentNowNext?.now
+        return PlaybackPresentation(
+            title: title,
+            subtitle: subtitle,
+            artworkURL: artworkURL,
+            isLive: isLiveStream,
+            programmeTitle: programme?.title,
+            programmeInterval: programme.map { DateInterval(start: $0.start, end: max($0.start, $0.stop)) }
+        )
+    }
+
     private func saveWatchHistory(tags: WatchHistoryTags? = nil) {
+        // Catch-up (timeshift) sessions must not persist history: the key would
+        // collide with the channel's live row and its resume time is meaningless
+        // once the archive window rolls past.
+        if suppressWatchHistory { return }
         let resolvedTags = tags ?? WatchHistoryTags(
             playlistId: playlistId,
             streamId: streamId,
@@ -1341,7 +1808,10 @@ private struct PlayerViewImpl: View {
                         .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
+            // Long channel metadata must never push trailing controls off-screen.
+            .clipped()
             .contentShape(Rectangle())
             .onTapGesture {
                 if let onNavigate = onNavigateToDetail {
@@ -1352,43 +1822,169 @@ private struct PlayerViewImpl: View {
             }
 
             HStack(spacing: 2) {
-                if let isFav = isFavorite, let toggle = onToggleFavorite {
-                    groupedCapsuleButton(systemName: isFav ? "star.fill" : "star") {
-                        toggle()
-                    }
-                    .accessibilityLabel(isFav ? L("favorites.remove") : L("favorites.add"))
-                }
-
-                groupedCapsuleButton(systemName: selectedAspectMode.iconName) {
-                    resetVideoTransformForAspectSwitch()
-                    videoAspectModeRaw = nextAspectMode.rawValue
-                }
-                .accessibilityLabel(selectedAspectMode.accessibilityLabel)
-
-                if AVPictureInPictureController.isPictureInPictureSupported() && pipEnabled {
-                    groupedCapsuleButton(systemName: "pip") {
-                        guard canEnterPiPNow else { return }
-                        pipManualSignal += 1
-                    }
-                    .accessibilityLabel(L("player.a11y.pip"))
-                }
-                groupedCapsuleButton(systemName: "textformat.size") {
-                    showSubtitleAppearance = true
-                }
-                .accessibilityLabel(L("player.a11y.subtitle_appearance"))
-                groupedCapsuleButton(systemName: "gearshape") {
-                    player.updateTracks()
-                    showTrackSettings = true
-                }
-                .accessibilityLabel(L("player.a11y.track_settings"))
+                topChromeActions
             }
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 4)
             .background(.ultraThinMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.2), radius: 8, y: 3)
         }
-        .padding(.horizontal, 20)
+        // The containing chrome already has 12pt + safe-area padding. A second
+        // 20pt inset made the live-TV toolbar overflow on compact phones.
+        .padding(.horizontal, isCompactWidth ? 0 : 20)
         .padding(.top, 16)
+    }
+
+    @ViewBuilder
+    private var topChromeActions: some View {
+        if isCompactWidth {
+            favoriteTopChromeAction
+            airPlayTopChromeAction
+            compactTopChromeMoreMenu
+        } else {
+            favoriteTopChromeAction
+
+            groupedCapsuleButton(systemName: selectedAspectMode.iconName) {
+                cycleVideoAspectMode()
+            }
+            .accessibilityLabel(selectedAspectMode.accessibilityLabel)
+
+            if canShowPiPTopChromeAction {
+                groupedCapsuleButton(systemName: "pip") {
+                    requestPictureInPicture()
+                }
+                .accessibilityLabel(L("player.a11y.pip"))
+            }
+
+            airPlayTopChromeAction
+
+            groupedCapsuleButton(systemName: "textformat.size") {
+                showSubtitleAppearance = true
+            }
+            .accessibilityLabel(L("player.a11y.subtitle_appearance"))
+
+            // Hide track settings only once playback is actually on the AirPlay
+            // target (local engine stopped -> empty track list). Stays visible
+            // through the remux prepare/picker window so the toolbar does not
+            // collapse the instant the AirPlay button is tapped.
+            if !player.isAirPlayPlaybackActive {
+                groupedCapsuleButton(systemName: "gearshape") {
+                    openTrackSettings()
+                }
+                .accessibilityLabel(L("player.a11y.track_settings"))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var favoriteTopChromeAction: some View {
+        if let isFav = isFavorite, let toggle = onToggleFavorite {
+            groupedCapsuleButton(systemName: isFav ? "star.fill" : "star") {
+                toggle()
+            }
+            .accessibilityLabel(isFav ? L("favorites.remove") : L("favorites.add"))
+        }
+    }
+
+    @ViewBuilder
+    private var airPlayTopChromeAction: some View {
+        if player.isAirPlayVideoCapable {
+            if player.needsAirPlayPreparation {
+                // UHF akışı: önce remux hazırlanır (loading), sonra seçici açılır.
+                if isPreparingAirPlay {
+                    ProgressView()
+                        .tint(.white)
+                        .frame(width: 40, height: 34)
+                } else {
+                    groupedCapsuleButton(systemName: "airplay.video") {
+                        prepareAndPresentAirPlay()
+                    }
+                    .accessibilityLabel("AirPlay")
+                }
+            } else {
+                AirPlayRoutePickerButton()
+                    .frame(width: 40, height: 34)
+                    .accessibilityLabel("AirPlay")
+            }
+        }
+    }
+
+    private var compactTopChromeMoreMenu: some View {
+        Menu {
+            Button {
+                resetTimer()
+                cycleVideoAspectMode()
+            } label: {
+                Label(selectedAspectMode.accessibilityLabel, systemImage: selectedAspectMode.iconName)
+            }
+
+            if canShowPiPTopChromeAction {
+                Button {
+                    resetTimer()
+                    requestPictureInPicture()
+                } label: {
+                    Label(L("player.a11y.pip"), systemImage: "pip")
+                }
+            }
+
+            Button {
+                resetTimer()
+                showSubtitleAppearance = true
+            } label: {
+                Label(L("player.a11y.subtitle_appearance"), systemImage: "textformat.size")
+            }
+
+            if !player.isAirPlayPlaybackActive {
+                Button {
+                    resetTimer()
+                    openTrackSettings()
+                } label: {
+                    Label(L("player.a11y.track_settings"), systemImage: "gearshape")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.96))
+                .shadow(color: .black.opacity(0.25), radius: 2, y: 0.5)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(L("detail.show_more"))
+    }
+
+    private var canShowPiPTopChromeAction: Bool {
+        AVPictureInPictureController.isPictureInPictureSupported()
+            && pipEnabled
+            // Hide PiP only once the video is actually on the AirPlay target
+            // (local surface shows the placeholder). Keep it available while the
+            // remux cast is still preparing / awaiting device selection.
+            && !player.isAirPlayPlaybackActive
+    }
+
+    private func cycleVideoAspectMode() {
+        resetVideoTransformForAspectSwitch()
+        videoAspectModeRaw = nextAspectMode.rawValue
+    }
+
+    private func requestPictureInPicture() {
+        guard canEnterPiPNow else { return }
+        pipManualSignal += 1
+    }
+
+    private func prepareAndPresentAirPlay() {
+        isPreparingAirPlay = true
+        player.prepareAirPlay { success in
+            isPreparingAirPlay = false
+            if success { airPlayPickerSignal += 1 }
+        }
+    }
+
+    private func openTrackSettings() {
+        player.updateTracks()
+        showTrackSettings = true
     }
 
     /// Top chrome sağ tarafında gruplu material capsule içinde kullanılan inline buton.
@@ -1424,7 +2020,7 @@ private struct PlayerViewImpl: View {
     /// Alt gradient arkaplanı karartıyor, butonlar direkt üstünde durur.
     private var centerTransport: some View {
         HStack(spacing: transportSpacing) {
-            if !isLiveStream && !isCenterTransportLoading {
+            if effectiveSeekable && !isCenterTransportLoading {
                 transparentTransportButton(
                     systemName: "gobackward.15",
                     symbolSize: transportSkipSymbol,
@@ -1440,7 +2036,7 @@ private struct PlayerViewImpl: View {
 
             centerPlayPauseOrLoadingButton
 
-            if !isLiveStream && !isCenterTransportLoading {
+            if effectiveSeekable && !isCenterTransportLoading {
                 transparentTransportButton(
                     systemName: "goforward.15",
                     symbolSize: transportSkipSymbol,
@@ -1685,9 +2281,9 @@ private struct PlayerViewImpl: View {
     private var canEnterPiPNow: Bool {
         player.state == .playing
             && player.isPlaying
-            && player.mpvEngine.isPlaybackEstablished
-            && !player.mpvEngine.isPaused
-            && !player.mpvEngine.isBuffering
+            && player.engine.isPlaybackEstablished
+            && !player.engine.isPaused
+            && !player.engine.isBuffering
     }
 
     private func glassIconButton(
@@ -2133,4 +2729,3 @@ private struct WatchHistoryTags: Equatable {
     let imageURL: String?
     let containerExtension: String?
 }
-

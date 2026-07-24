@@ -95,7 +95,7 @@ struct SeriesView: View {
                     }
                     .refreshable {
                         // Bağımsız Task: refreshable iptali isteklere yayılmasın (bkz. LiveStreamsView).
-                        let work = Task { await contentStore.refreshFromNetwork(playlist: playlist) }
+                        let work = Task { await contentStore.refreshFromNetwork(playlist: playlist, only: .series) }
                         await work.value
                     }
                     .onChange(of: pendingScrollTarget) { _, target in

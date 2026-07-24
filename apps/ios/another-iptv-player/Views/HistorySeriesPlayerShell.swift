@@ -4,15 +4,20 @@ import SwiftUI
 /// “Kaldığın yerden” / geçmişten açılan dizi oynatıcısı; aynı dizi içinde önceki–sonraki bölüme geçer.
 struct HistorySeriesPlayerShell: View {
     let playlist: Playlist
+    private let initialHistory: DBWatchHistory
+    private let initialURL: URL
 
     @State private var session: SeriesPlaybackSession
     @State private var neighborPrev: DBEpisode?
     @State private var neighborNext: DBEpisode?
+    @Environment(\.playerOverlayPresentationID) private var overlayPresentationID
     
     var onNavigateToDetail: ((String, String) -> Void)? = nil
 
     init(playlist: Playlist, history: DBWatchHistory, url: URL, onNavigateToDetail: ((String, String) -> Void)? = nil) {
         self.playlist = playlist
+        self.initialHistory = history
+        self.initialURL = url
         _session = State(initialValue: SeriesPlaybackSession(history: history, url: url))
         self.onNavigateToDetail = onNavigateToDetail
     }
@@ -39,6 +44,17 @@ struct HistorySeriesPlayerShell: View {
         .task(id: session.streamId) {
             await refreshNeighbors()
         }
+        .onChange(of: overlayPresentationID) { _, _ in
+            applyInitialSelectionIfNeeded()
+        }
+    }
+
+    private func applyInitialSelectionIfNeeded() {
+        let target = SeriesPlaybackSession(history: initialHistory, url: initialURL)
+        guard session != target else { return }
+        neighborPrev = nil
+        neighborNext = nil
+        session = target
     }
 
     private func refreshNeighbors() async {

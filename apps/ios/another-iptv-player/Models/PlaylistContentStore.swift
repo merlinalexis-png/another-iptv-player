@@ -2,6 +2,12 @@ import Foundation
 import GRDB
 import Combine
 
+/// Content-type scope for catalog sync/refresh: pull-to-refresh syncs only the
+/// pulled tab's data instead of the whole catalog.
+enum CatalogContentType {
+    case live, vod, series
+}
+
 /// Aktif playlist kataloğunu bellekte tutar; açılışta veritabanından yükler, gerekirse API ile doldurur.
 @MainActor
 final class PlaylistContentStore: ObservableObject {
@@ -198,11 +204,74 @@ final class PlaylistContentStore: ObservableObject {
         loadingMessage = nil
     }
 
+    /// Scoped pull-to-refresh: only the pulled tab's content type is refetched and
+    /// rewritten (e.g. the Movies tab syncs VOD categories + streams); the other
+    /// types keep their local data untouched.
+    func refreshFromNetwork(playlist: Playlist, only type: CatalogContentType) async {
+        do {
+            try await syncFromNetworkReplacingLocal(playlist: playlist, only: type) { [weak self] msg in
+                self?.loadingMessage = msg
+            }
+            await reloadFromDatabaseIfActive(playlistId: playlist.id, only: type)
+        } catch {
+            loadError = error.localizedDescription
+        }
+        loadingMessage = nil
+    }
+
     /// Ayarlar’dan tam yenileme sonrası belleği güncelle.
     func reloadFromDatabaseIfActive(playlistId: UUID) async {
         guard activePlaylistId == playlistId else { return }
         do {
             try await reloadFromDatabase(playlistId: playlistId)
+        } catch {
+            loadError = error.localizedDescription
+        }
+    }
+
+    /// Scoped in-memory reload: refreshes only one content type's categories and
+    /// items, applying the same uncategorized merge as the full reload.
+    func reloadFromDatabaseIfActive(playlistId: UUID, only type: CatalogContentType) async {
+        guard activePlaylistId == playlistId else { return }
+        do {
+            switch type {
+            case .live:
+                async let catsTask = AppDatabase.shared.read { db in
+                    try Self.fetchCategories(playlistId: playlistId, type: "live", db: db)
+                }
+                async let dataTask = AppDatabase.shared.read { db in
+                    try Self.fetchLiveStreamsData(playlistId: playlistId, db: db)
+                }
+                let (cats, ls) = try await (catsTask, dataTask)
+                let by = Self.mergeUncategorized(ls.byCategory, validIds: Set(cats.map(\.id)))
+                liveCategories = Self.appendingUncategorized(cats, byCategory: by, type: "live", playlistId: playlistId)
+                liveStreams = ls.streams
+                liveStreamsByCategoryId = by
+            case .vod:
+                async let catsTask = AppDatabase.shared.read { db in
+                    try Self.fetchCategories(playlistId: playlistId, type: "vod", db: db)
+                }
+                async let dataTask = AppDatabase.shared.read { db in
+                    try Self.fetchVODStreamsData(playlistId: playlistId, db: db)
+                }
+                let (cats, vs) = try await (catsTask, dataTask)
+                let by = Self.mergeUncategorized(vs.byCategory, validIds: Set(cats.map(\.id)))
+                vodCategories = Self.appendingUncategorized(cats, byCategory: by, type: "vod", playlistId: playlistId)
+                vodStreams = vs.streams
+                vodStreamsByCategoryId = by
+            case .series:
+                async let catsTask = AppDatabase.shared.read { db in
+                    try Self.fetchCategories(playlistId: playlistId, type: "series", db: db)
+                }
+                async let dataTask = AppDatabase.shared.read { db in
+                    try Self.fetchSeriesData(playlistId: playlistId, db: db)
+                }
+                let (cats, si) = try await (catsTask, dataTask)
+                let by = Self.mergeUncategorized(si.byCategory, validIds: Set(cats.map(\.id)))
+                seriesCategories = Self.appendingUncategorized(cats, byCategory: by, type: "series", playlistId: playlistId)
+                seriesItems = si.items
+                seriesItemsByCategoryId = by
+            }
         } catch {
             loadError = error.localizedDescription
         }
@@ -271,20 +340,19 @@ final class PlaylistContentStore: ObservableObject {
         let byCategory: [String: [SeriesWithCategory]]
     }
 
+    private static func fetchCategories(playlistId: UUID, type: String, db: Database) throws -> [DBCategory] {
+        try DBCategory
+            .filter(Column("playlistId") == playlistId && Column("type") == type)
+            .order(Column("sortIndex"))
+            .fetchAll(db)
+    }
+
     private static func fetchCategoriesOnly(playlistId: UUID, db: Database) throws -> CategoriesBundle {
-        let live = try DBCategory
-            .filter(Column("playlistId") == playlistId && Column("type") == "live")
-            .order(Column("sortIndex"))
-            .fetchAll(db)
-        let vod = try DBCategory
-            .filter(Column("playlistId") == playlistId && Column("type") == "vod")
-            .order(Column("sortIndex"))
-            .fetchAll(db)
-        let series = try DBCategory
-            .filter(Column("playlistId") == playlistId && Column("type") == "series")
-            .order(Column("sortIndex"))
-            .fetchAll(db)
-        return CategoriesBundle(live: live, vod: vod, series: series)
+        CategoriesBundle(
+            live: try fetchCategories(playlistId: playlistId, type: "live", db: db),
+            vod: try fetchCategories(playlistId: playlistId, type: "vod", db: db),
+            series: try fetchCategories(playlistId: playlistId, type: "series", db: db)
+        )
     }
 
     /// Kategorisi olmayan/yetim streamlerin toplandığı sentetik kategori id'si.
@@ -391,69 +459,123 @@ final class PlaylistContentStore: ObservableObject {
             liveCatsTask, vodCatsTask, seriesCatsTask, liveStreamsTask, vodsTask, seriesTask
         )
 
-        // Yetişkin içerik filtresi
         let filterAdult = playlist.filterAdultContent
-        let adultLiveCatIds  = filterAdult ? AdultContentFilter.adultCategoryIds(from: liveCats)   : []
-        let adultVodCatIds   = filterAdult ? AdultContentFilter.adultCategoryIds(from: vodCats)    : []
-        let adultSeriesCatIds = filterAdult ? AdultContentFilter.adultCategoryIds(from: seriesCats) : []
-
         progress(L("phase.save_db"))
         try await AppDatabase.shared.write { db in
             // Delete-then-insert inside one transaction: rolls back together on any error.
-            try db.execute(sql: "DELETE FROM category WHERE playlistId = ?", arguments: [pid])
-            try db.execute(sql: "DELETE FROM liveStream WHERE playlistId = ?", arguments: [pid])
-            try db.execute(sql: "DELETE FROM vodStream WHERE playlistId = ?", arguments: [pid])
-            try db.execute(sql: "DELETE FROM series WHERE playlistId = ?", arguments: [pid])
+            try Self.replaceLiveCatalog(db: db, pid: pid, categories: liveCats, streams: liveStreamsAPI, filterAdult: filterAdult)
+            try Self.replaceVODCatalog(db: db, pid: pid, categories: vodCats, streams: vods, filterAdult: filterAdult)
+            try Self.replaceSeriesCatalog(db: db, pid: pid, categories: seriesCats, series: series, filterAdult: filterAdult)
+        }
+    }
 
-            for (index, cat) in liveCats.enumerated() {
-                if filterAdult, let name = cat.categoryName, AdultContentFilter.isAdultCategoryName(name) { continue }
-                let dbCat = DBCategory(id: cat.id, name: cat.categoryName ?? L("content.unnamed"), parentId: cat.parentId, type: "live", sortIndex: index, playlistId: pid)
-                try dbCat.save(db)
-            }
-            for (index, cat) in vodCats.enumerated() {
-                if filterAdult, let name = cat.categoryName, AdultContentFilter.isAdultCategoryName(name) { continue }
-                let dbCat = DBCategory(id: cat.id, name: cat.categoryName ?? L("content.unnamed"), parentId: cat.parentId, type: "vod", sortIndex: index, playlistId: pid)
-                try dbCat.save(db)
-            }
-            for (index, cat) in seriesCats.enumerated() {
-                if filterAdult, let name = cat.categoryName, AdultContentFilter.isAdultCategoryName(name) { continue }
-                let dbCat = DBCategory(id: cat.id, name: cat.categoryName ?? L("content.unnamed"), parentId: cat.parentId, type: "series", sortIndex: index, playlistId: pid)
-                try dbCat.save(db)
-            }
+    /// Scoped sync: refetches and rewrites a single content type; the other types'
+    /// rows are left untouched. Same atomic delete-then-insert guarantee per type.
+    func syncFromNetworkReplacingLocal(
+        playlist: Playlist, only type: CatalogContentType, progress: @escaping (String) -> Void
+    ) async throws {
+        let client = XtreamAPIClient(playlist: playlist)
+        let pid = playlist.id
+        let filterAdult = playlist.filterAdultContent
 
-            for (index, stream) in liveStreamsAPI.enumerated() {
-                if filterAdult, AdultContentFilter.isAdultLiveStream(stream, adultCategoryIds: adultLiveCatIds) { continue }
-                let dbStream = DBLiveStream(streamId: stream.id, name: stream.name ?? L("content.unnamed"), streamIcon: stream.streamIcon, epgChannelId: stream.epgChannelId, categoryId: stream.categoryId, sortIndex: index, playlistId: pid)
-                try dbStream.save(db)
+        progress(L("phase.fetch_categories"))
+        switch type {
+        case .live:
+            async let catsTask = client.getLiveCategories()
+            async let streamsTask = client.getLiveStreams()
+            let (cats, streams) = try await (catsTask, streamsTask)
+            progress(L("phase.save_db"))
+            try await AppDatabase.shared.write { db in
+                try Self.replaceLiveCatalog(db: db, pid: pid, categories: cats, streams: streams, filterAdult: filterAdult)
             }
+        case .vod:
+            async let catsTask = client.getVODCategories()
+            async let streamsTask = client.getVODStreams()
+            let (cats, streams) = try await (catsTask, streamsTask)
+            progress(L("phase.save_db"))
+            try await AppDatabase.shared.write { db in
+                try Self.replaceVODCatalog(db: db, pid: pid, categories: cats, streams: streams, filterAdult: filterAdult)
+            }
+        case .series:
+            async let catsTask = client.getSeriesCategories()
+            async let seriesTask = client.getSeries()
+            let (cats, items) = try await (catsTask, seriesTask)
+            progress(L("phase.save_db"))
+            try await AppDatabase.shared.write { db in
+                try Self.replaceSeriesCatalog(db: db, pid: pid, categories: cats, series: items, filterAdult: filterAdult)
+            }
+        }
+    }
 
-            for (index, stream) in vods.enumerated() {
-                if filterAdult, AdultContentFilter.isAdultVODStream(stream, adultCategoryIds: adultVodCatIds) { continue }
-                var dbVOD = DBVODStream(streamId: stream.id, name: stream.name ?? L("content.unnamed"), streamIcon: stream.streamIcon, categoryId: stream.categoryId, rating: stream.rating, containerExtension: stream.containerExtension, sortIndex: index, playlistId: pid)
-                dbVOD.added = stream.added
-                try dbVOD.save(db)
-            }
+    // MARK: - DB rewrite helpers (shared by full and scoped sync)
 
-            for (index, s) in series.enumerated() {
-                if filterAdult, let cid = s.categoryId, adultSeriesCatIds.contains(cid) { continue }
-                let dbSeries = DBSeries(
-                    seriesId: s.id,
-                    name: s.name ?? L("content.unnamed"),
-                    cover: s.cover,
-                    plot: s.plot,
-                    cast: s.cast,
-                    director: s.director,
-                    genre: s.genre,
-                    releaseDate: s.releaseDate,
-                    rating: s.rating,
-                    lastModified: s.lastModified,
-                    youtubeTrailer: s.youtubeTrailer,
-                    categoryId: s.categoryId,
-                    sortIndex: index,
-                    playlistId: pid
-                )
-                try dbSeries.save(db)
-            }
+    private static func replaceLiveCatalog(
+        db: Database, pid: UUID, categories: [XtreamCategory], streams: [XtreamLiveStream], filterAdult: Bool
+    ) throws {
+        let adultCatIds = filterAdult ? AdultContentFilter.adultCategoryIds(from: categories) : []
+        try db.execute(sql: "DELETE FROM category WHERE playlistId = ? AND type = 'live'", arguments: [pid])
+        try db.execute(sql: "DELETE FROM liveStream WHERE playlistId = ?", arguments: [pid])
+        for (index, cat) in categories.enumerated() {
+            if filterAdult, let name = cat.categoryName, AdultContentFilter.isAdultCategoryName(name) { continue }
+            let dbCat = DBCategory(id: cat.id, name: cat.categoryName ?? L("content.unnamed"), parentId: cat.parentId, type: "live", sortIndex: index, playlistId: pid)
+            try dbCat.save(db)
+        }
+        for (index, stream) in streams.enumerated() {
+            if filterAdult, AdultContentFilter.isAdultLiveStream(stream, adultCategoryIds: adultCatIds) { continue }
+            let dbStream = DBLiveStream(streamId: stream.id, name: stream.name ?? L("content.unnamed"), streamIcon: stream.streamIcon, epgChannelId: stream.epgChannelId, categoryId: stream.categoryId, sortIndex: index, playlistId: pid, tvArchive: stream.tvArchive ?? 0, tvArchiveDuration: stream.tvArchiveDuration ?? 0)
+            try dbStream.save(db)
+        }
+    }
+
+    private static func replaceVODCatalog(
+        db: Database, pid: UUID, categories: [XtreamCategory], streams: [XtreamVODStream], filterAdult: Bool
+    ) throws {
+        let adultCatIds = filterAdult ? AdultContentFilter.adultCategoryIds(from: categories) : []
+        try db.execute(sql: "DELETE FROM category WHERE playlistId = ? AND type = 'vod'", arguments: [pid])
+        try db.execute(sql: "DELETE FROM vodStream WHERE playlistId = ?", arguments: [pid])
+        for (index, cat) in categories.enumerated() {
+            if filterAdult, let name = cat.categoryName, AdultContentFilter.isAdultCategoryName(name) { continue }
+            let dbCat = DBCategory(id: cat.id, name: cat.categoryName ?? L("content.unnamed"), parentId: cat.parentId, type: "vod", sortIndex: index, playlistId: pid)
+            try dbCat.save(db)
+        }
+        for (index, stream) in streams.enumerated() {
+            if filterAdult, AdultContentFilter.isAdultVODStream(stream, adultCategoryIds: adultCatIds) { continue }
+            var dbVOD = DBVODStream(streamId: stream.id, name: stream.name ?? L("content.unnamed"), streamIcon: stream.streamIcon, categoryId: stream.categoryId, rating: stream.rating, containerExtension: stream.containerExtension, sortIndex: index, playlistId: pid)
+            dbVOD.added = stream.added
+            try dbVOD.save(db)
+        }
+    }
+
+    private static func replaceSeriesCatalog(
+        db: Database, pid: UUID, categories: [XtreamCategory], series: [XtreamSeries], filterAdult: Bool
+    ) throws {
+        let adultCatIds = filterAdult ? AdultContentFilter.adultCategoryIds(from: categories) : []
+        try db.execute(sql: "DELETE FROM category WHERE playlistId = ? AND type = 'series'", arguments: [pid])
+        try db.execute(sql: "DELETE FROM series WHERE playlistId = ?", arguments: [pid])
+        for (index, cat) in categories.enumerated() {
+            if filterAdult, let name = cat.categoryName, AdultContentFilter.isAdultCategoryName(name) { continue }
+            let dbCat = DBCategory(id: cat.id, name: cat.categoryName ?? L("content.unnamed"), parentId: cat.parentId, type: "series", sortIndex: index, playlistId: pid)
+            try dbCat.save(db)
+        }
+        for (index, s) in series.enumerated() {
+            if filterAdult, let cid = s.categoryId, adultCatIds.contains(cid) { continue }
+            let dbSeries = DBSeries(
+                seriesId: s.id,
+                name: s.name ?? L("content.unnamed"),
+                cover: s.cover,
+                plot: s.plot,
+                cast: s.cast,
+                director: s.director,
+                genre: s.genre,
+                releaseDate: s.releaseDate,
+                rating: s.rating,
+                lastModified: s.lastModified,
+                youtubeTrailer: s.youtubeTrailer,
+                categoryId: s.categoryId,
+                sortIndex: index,
+                playlistId: pid
+            )
+            try dbSeries.save(db)
         }
     }
 }

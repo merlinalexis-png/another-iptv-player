@@ -7,11 +7,14 @@ struct M3UDashboardView: View {
 
     @ObservedObject private var store = M3UContentStore.shared
     @ObservedObject private var favorites = M3UFavoriteStore.shared
+    @ObservedObject private var epgStore = EPGStore.shared
     @StateObject private var playerOverlay = PlayerOverlayController()
 
     /// Son seçilen tab kaydedilmez — dashboard her açılışta "Kanallar"dan başlar.
     @State private var selectedTab: Int = 0
-    @State private var windowSize = UIScreen.main.bounds.size
+    // Keep poster sizing tied to the display, not to this view's transient layout.
+    // Keyboard/status-bar/player transitions can temporarily shrink GeometryReader.
+    private let posterMetrics = PosterMetrics(windowSize: UIScreen.main.bounds.size)
 
     var body: some View {
         ZStack {
@@ -35,7 +38,7 @@ struct M3UDashboardView: View {
                 }
             }
             .tabViewStyle(.sidebarAdaptable)
-            .environment(\.posterMetrics, PosterMetrics(windowSize: windowSize))
+            .environment(\.posterMetrics, posterMetrics)
 
             ZStack {
                 if let item = playerOverlay.presentation {
@@ -44,23 +47,26 @@ struct M3UDashboardView: View {
                         .environment(\.playerOverlayDismiss) {
                             playerOverlay.dismiss(animated: true)
                         }
-                        .transition(.move(edge: .bottom))
+                        .environment(\.playerOverlayMode, playerOverlay.mode)
+                        .environment(\.playerOverlayPresentationID, item.id)
+                        .environment(\.playerOverlayMinimize) { playerOverlay.minimize() }
+                        .environment(\.playerOverlayExpand) { playerOverlay.expand() }
+                        // Keep UIKit-backed video surfaces at a fixed geometry while they attach.
+                        // Moving the whole AVPlayer/KSPlayer subtree produced a launch flash.
+                        .transition(.opacity)
                 }
             }
-            .animation(.easeOut(duration: 0.22), value: playerOverlay.presentation?.id)
+            // Animate only insertion/removal, never in-place source revisions.
+            .animation(.easeOut(duration: 0.14), value: playerOverlay.presentation != nil)
             .zIndex(10_000)
         }
-        .background(
-            GeometryReader { geo in
-                Color.clear
-                    .onAppear { windowSize = geo.size }
-                    .onChange(of: geo.size) { _, size in windowSize = size }
-            }
-        )
         .environmentObject(playerOverlay)
+        .environment(\.epgSnapshot, epgStore.snapshot)
         .task(id: playlist.id) {
             favorites.track(playlistId: playlist.id)
             await store.loadPlaylist(playlist)
+            epgStore.setActivePlaylist(playlist)
+            await epgStore.refreshIfStale(playlist: playlist)
         }
         .alert(L("loading.error.title"), isPresented: Binding(
             get: {

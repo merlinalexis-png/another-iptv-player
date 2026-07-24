@@ -51,7 +51,10 @@ enum M3UImporter {
                     tvgCountry: ch.tvgCountry,
                     groupTitle: ch.groupTitle,
                     userAgent: ch.userAgent,
-                    sortIndex: index
+                    sortIndex: index,
+                    catchup: ch.catchup,
+                    catchupSource: ch.catchupSource,
+                    catchupDays: ch.catchupDays
                 )
                 try row.save(db)
             }
