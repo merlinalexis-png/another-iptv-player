@@ -4,8 +4,6 @@ export const LINKS = {
     "https://github.com/bsogulcan/another-iptv-player/releases/latest",
   appStore:
     "https://apps.apple.com/us/app/another-iptv-player/id6747290392",
-  googlePlay:
-    "https://play.google.com/store/apps/details?id=dev.ogos.anotheriptvplayer",
   coffee: "https://www.buymeacoffee.com/bsogulcan",
   email: "mailto:bsogulcan@gmail.com",
 };
@@ -16,14 +14,7 @@ export const RATINGS = {
   macStore: { value: 4.8, count: 16 },
 };
 
-export const PLATFORMS = [
-  "iOS",
-  "Android",
-  "macOS",
-  "Windows",
-  "Linux",
-  "iPadOS",
-];
+export const PLATFORMS = ["iOS", "iPadOS", "macOS"];
 
 export type Shot = { src: string; alt: string };
 
@@ -68,30 +59,10 @@ export const SCREENSHOTS: Record<string, Shot[]> = {
     { src: "/screenshots/ipad/episode.png", alt: "Episode on iPad" },
     { src: "/screenshots/ipad/movies.png", alt: "Movies on iPad" },
   ],
-  Android: [
-    {
-      src: "/screenshots/android/series-info.png",
-      alt: "Series info on Android",
-    },
-    { src: "/screenshots/android/episodes.png", alt: "Episodes on Android" },
-    { src: "/screenshots/android/movies.png", alt: "Movies on Android" },
-    { src: "/screenshots/android/live.png", alt: "Live TV on Android" },
-    {
-      src: "/screenshots/android/playlists.png",
-      alt: "Playlists on Android",
-    },
-    {
-      src: "/screenshots/android/player-settings.png",
-      alt: "Player settings on Android",
-    },
-  ],
 };
 
 export const DOWNLOADS = [
   { name: "App Store", href: LINKS.appStore, featured: true },
-  { name: "Google Play", href: LINKS.googlePlay, featured: true },
-  { name: "macOS", href: LINKS.releases },
-  { name: "Windows", href: LINKS.releases },
-  { name: "Linux", href: LINKS.releases },
+  { name: "macOS", href: LINKS.appStore },
   { name: "GitHub Releases", href: LINKS.releases },
 ];

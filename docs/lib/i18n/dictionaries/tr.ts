@@ -6,7 +6,7 @@ const tr: Dictionary = {
     home: {
       title: "Another IPTV Player — Ücretsiz ve Açık Kaynak IPTV Oynatıcı",
       description:
-        "Ücretsiz, açık kaynaklı, çok platformlu bir IPTV oynatıcı. Ücretli oynatıcıların tüm premium özellikleri — Xtream Codes ve M3U desteği, çevrimdışı indirme, PiP, HDR — reklamsız, izleme yok, ücret yok.",
+        "iPhone, iPad ve Mac için ücretsiz, açık kaynaklı bir IPTV oynatıcı. Ücretli oynatıcıların tüm premium özellikleri — Xtream Codes ve M3U desteği, TV Rehberi (EPG), AirPlay, çevrimdışı indirme, PiP, HDR — reklamsız, izleme yok, ücret yok.",
     },
     faq: {
       title: "SSS — Another IPTV Player",
@@ -46,9 +46,8 @@ const tr: Dictionary = {
     titleHighlight: "harika",
     titlePost: " oynatıcı.",
     subtitle:
-      "Ücretli IPTV oynatıcılarının tüm premium özellikleri — Xtream Codes ve M3U desteği, kaldığın yerden devam, sıradaki bölümü otomatik oynatma — sahip olduğun her cihazda, ücretsiz.",
+      "Ücretli IPTV oynatıcılarının tüm premium özellikleri — Xtream Codes ve M3U desteği, TV Rehberi (EPG), AirPlay, kaldığın yerden devam — iPhone, iPad ve Mac'te, ücretsiz.",
     ctaAppStore: "App Store",
-    ctaGooglePlay: "Google Play",
     ctaGithub: "GitHub'da yıldız ver",
   },
 
@@ -56,6 +55,8 @@ const tr: Dictionary = {
     "Canlı TV",
     "Filmler",
     "Diziler",
+    "TV Rehberi (EPG)",
+    "AirPlay",
     "Xtream Codes",
     "M3U / M3U8",
     "Çevrimdışı İndirme",
@@ -88,8 +89,16 @@ const tr: Dictionary = {
         body: "Uzak bir URL'den veya yerel bir .m3u / .m3u8 dosyasından oynatma listesi ekle.",
       },
       {
+        title: "TV Rehberi (EPG)",
+        body: "Canlı TV için tam yayın akışı rehberi — şimdi ve sırada ne var gör, kanallar katlanabilir kategorilere göre gruplu.",
+      },
+      {
         title: "Picture-in-Picture",
-        body: "Videoyu kayan bir pencereye al ve başka işler yaparken izlemeye devam et.",
+        body: "Videoyu kayan bir pencereye al — uygulama içinde veya sistem genelinde — ve başka işler yaparken izlemeye devam et.",
+      },
+      {
+        title: "AirPlay",
+        body: "Canlı TV, film ve dizileri Apple TV'ne aktar — içe aktarılan altyazılar dahil.",
       },
       {
         title: "HDR Oynatma",
@@ -106,6 +115,10 @@ const tr: Dictionary = {
       {
         title: "Hareket Kontrolleri",
         body: "Parlaklık ve ses için kaydır, ±15sn atla, 2× hız için uzun bas.",
+      },
+      {
+        title: "Sıralama ve Filtreleme",
+        body: "Film, dizi ve kanalları sırala ve filtrele — ayrıca düz \"Tüm Filmler\", \"Tüm Diziler\" ve \"Tüm Kanallar\" görünümleri.",
       },
       {
         title: "Genel Arama",
@@ -165,14 +178,11 @@ const tr: Dictionary = {
     label: "Uygulamayı al",
     heading: "Ücretsiz, sonsuza dek — tüm cihazlarında.",
     intro:
-      "iOS ve Android, otomatik güncellemelerle resmi mağazalardan dağıtılır. Masaüstü ve yan yükleme sürümleri GitHub Releases'te yayınlanır.",
+      "iPhone ve iPad uygulaması, otomatik güncellemelerle App Store'dan dağıtılır. Mac'te önceki nesil uygulama hâlâ kullanılabilir.",
     subs: {
       "App Store": "iPhone ve iPad",
-      "Google Play": "Android telefon ve tabletler",
-      macOS: "Universal · Intel ve Apple Silicon",
-      Windows: "x64 · Windows 10 ve 11",
-      Linux: "x64 · çoğu dağıtım",
-      "GitHub Releases": "APK, IPA ve masaüstü sürümleri",
+      macOS: "Önceki nesil uygulama",
+      "GitHub Releases": "Kaynak kodu ve sürüm notları",
     },
   },
 
@@ -199,7 +209,7 @@ const tr: Dictionary = {
 
   footer: {
     tagline:
-      "iOS, Android, macOS, Windows ve Linux için ücretsiz ve açık kaynaklı bir IPTV oynatıcı. Reklam yok. İzleme yok. Ücret yok.",
+      "iPhone, iPad ve Mac için ücretsiz ve açık kaynaklı bir IPTV oynatıcı. Reklam yok. İzleme yok. Ücret yok.",
     product: "Ürün",
     help: "Yardım",
     project: "Proje",
@@ -282,7 +292,7 @@ const tr: Dictionary = {
       },
       {
         q: "Another IPTV Player hangi platformlarda mevcut?",
-        a: "iOS (iPhone ve iPad), Android, macOS, Windows ve Linux. En güncel sürümler için web sitemize veya GitHub'a bak.",
+        a: "App Store üzerinden iOS (iPhone ve iPad). macOS'te önceki nesil uygulama hâlâ kullanılabilir. En güncel gelişmeler için web sitemize veya GitHub'a bak.",
       },
       {
         q: "Nasıl hata bildirebilir veya özellik isteyebilirim?",

@@ -6,7 +6,7 @@ const de: Dictionary = {
     home: {
       title: "Another IPTV Player — Kostenloser & Open-Source IPTV-Player",
       description:
-        "Ein kostenloser, quelloffener, plattformübergreifender IPTV-Player. Alle Premium-Funktionen kostenpflichtiger Player — Xtream Codes & M3U, Offline-Downloads, PiP, HDR — ohne Werbung, ohne Tracking, ohne Gebühren.",
+        "Ein kostenloser, quelloffener IPTV-Player für iPhone, iPad & Mac. Alle Premium-Funktionen kostenpflichtiger Player — Xtream Codes & M3U, TV-Guide (EPG), AirPlay, Offline-Downloads, PiP, HDR — ohne Werbung, ohne Tracking, ohne Gebühren.",
     },
     faq: {
       title: "FAQ — Another IPTV Player",
@@ -46,9 +46,8 @@ const de: Dictionary = {
     titleHighlight: "wunderbarer",
     titlePost: " Player.",
     subtitle:
-      "Alle Premium-Funktionen kostenpflichtiger IPTV-Player — Xtream Codes & M3U, Weiterschauen, automatische nächste Folge — kostenlos, auf jedem deiner Geräte.",
+      "Alle Premium-Funktionen kostenpflichtiger IPTV-Player — Xtream Codes & M3U, TV-Guide (EPG), AirPlay, Weiterschauen — kostenlos, auf iPhone, iPad und Mac.",
     ctaAppStore: "App Store",
-    ctaGooglePlay: "Google Play",
     ctaGithub: "Auf GitHub bewerten",
   },
 
@@ -56,6 +55,8 @@ const de: Dictionary = {
     "Live-TV",
     "Filme",
     "Serien",
+    "TV-Guide (EPG)",
+    "AirPlay",
     "Xtream Codes",
     "M3U / M3U8",
     "Offline-Downloads",
@@ -88,8 +89,16 @@ const de: Dictionary = {
         body: "Füge Playlists über eine entfernte URL oder eine lokale .m3u/.m3u8-Datei hinzu.",
       },
       {
+        title: "TV-Guide (EPG)",
+        body: "Ein vollständiger Programmführer für Live-TV — sieh, was jetzt und als Nächstes läuft, mit Sendern gruppiert in einklappbare Kategorien.",
+      },
+      {
         title: "Bild-in-Bild",
-        body: "Lass das Video in einem schwebenden Fenster laufen und schaue weiter, während du nebenbei arbeitest.",
+        body: "Lass das Video in einem schwebenden Fenster laufen — in der App oder systemweit — und schaue weiter, während du nebenbei arbeitest.",
+      },
+      {
+        title: "AirPlay",
+        body: "Streame Live-TV, Filme und Serien auf dein Apple TV — importierte Untertitel inklusive.",
       },
       {
         title: "HDR-Wiedergabe",
@@ -106,6 +115,10 @@ const de: Dictionary = {
       {
         title: "Gestensteuerung",
         body: "Wische für Helligkeit und Lautstärke, springe ±15 s, halte gedrückt für 2×-Geschwindigkeit.",
+      },
+      {
+        title: "Sortieren & Filtern",
+        body: "Sortiere und filtere Filme, Serien und Sender — plus flache Ansichten „Alle Filme“, „Alle Serien“ und „Alle Sender“.",
       },
       {
         title: "Globale Suche",
@@ -165,14 +178,11 @@ const de: Dictionary = {
     label: "App holen",
     heading: "Kostenlos, für immer — auf all deinen Geräten.",
     intro:
-      "iOS und Android erscheinen mit automatischen Updates über die offiziellen Stores. Desktop- und Sideload-Builds werden auf GitHub Releases veröffentlicht.",
+      "Die iPhone-&-iPad-App erscheint mit automatischen Updates über den App Store. Auf dem Mac ist weiterhin die App der Vorgängergeneration verfügbar.",
     subs: {
       "App Store": "iPhone & iPad",
-      "Google Play": "Android-Smartphones & -Tablets",
-      macOS: "Universal · Intel & Apple Silicon",
-      Windows: "x64 · Windows 10 & 11",
-      Linux: "x64 · die meisten Distributionen",
-      "GitHub Releases": "APK, IPA & Desktop-Builds",
+      macOS: "App der Vorgängergeneration",
+      "GitHub Releases": "Quellcode & Versionshinweise",
     },
   },
 
@@ -199,7 +209,7 @@ const de: Dictionary = {
 
   footer: {
     tagline:
-      "Ein kostenloser & quelloffener IPTV-Player für iOS, Android, macOS, Windows und Linux. Keine Werbung. Kein Tracking. Keine Gebühren.",
+      "Ein kostenloser & quelloffener IPTV-Player für iPhone, iPad und Mac. Keine Werbung. Kein Tracking. Keine Gebühren.",
     product: "Produkt",
     help: "Hilfe",
     project: "Projekt",
@@ -282,7 +292,7 @@ const de: Dictionary = {
       },
       {
         q: "Auf welchen Plattformen ist Another IPTV Player verfügbar?",
-        a: "iOS (iPhone & iPad), Android, macOS, Windows und Linux. Aktuelle Builds findest du auf unserer Website oder auf GitHub.",
+        a: "iOS (iPhone & iPad) über den App Store. Auf macOS ist weiterhin die App der Vorgängergeneration verfügbar. Aktuelle Updates findest du auf unserer Website oder auf GitHub.",
       },
       {
         q: "Wie melde ich einen Fehler oder wünsche eine Funktion?",

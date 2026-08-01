@@ -6,7 +6,7 @@ const zh: Dictionary = {
     home: {
       title: "Another IPTV Player — 免费开源的 IPTV 播放器",
       description:
-        "一款免费、开源、跨平台的 IPTV 播放器。付费播放器的全部高级功能——Xtream Codes 与 M3U 支持、离线下载、画中画、HDR——没有广告、没有跟踪、没有费用。",
+        "一款适用于 iPhone、iPad 与 Mac 的免费开源 IPTV 播放器。付费播放器的全部高级功能——Xtream Codes 与 M3U 支持、电视指南 (EPG)、AirPlay、离线下载、画中画、HDR——没有广告、没有跟踪、没有费用。",
     },
     faq: {
       title: "常见问题 — Another IPTV Player",
@@ -46,9 +46,8 @@ const zh: Dictionary = {
     titleHighlight: "出色",
     titlePost: " 的播放器。",
     subtitle:
-      "付费 IPTV 播放器的全部高级功能——Xtream Codes 与 M3U 支持、继续观看、自动播放下一集——免费，在你所有的设备上。",
+      "付费 IPTV 播放器的全部高级功能——Xtream Codes 与 M3U 支持、电视指南 (EPG)、AirPlay、继续观看——免费，在 iPhone、iPad 与 Mac 上。",
     ctaAppStore: "App Store",
-    ctaGooglePlay: "Google Play",
     ctaGithub: "在 GitHub 点星",
   },
 
@@ -56,6 +55,8 @@ const zh: Dictionary = {
     "直播电视",
     "电影",
     "剧集",
+    "电视指南 (EPG)",
+    "AirPlay",
     "Xtream Codes",
     "M3U / M3U8",
     "离线下载",
@@ -88,8 +89,16 @@ const zh: Dictionary = {
         body: "从远程 URL 或本地 .m3u / .m3u8 文件添加播放列表。",
       },
       {
+        title: "电视指南 (EPG)",
+        body: "完整的直播电视节目指南——查看当前和接下来播出的节目，频道按可折叠的分类分组。",
+      },
+      {
         title: "画中画",
-        body: "将视频缩入悬浮窗口，一边处理其他事情一边继续观看。",
+        body: "将视频缩入悬浮窗口——在应用内或整个系统中——一边处理其他事情一边继续观看。",
+      },
+      {
+        title: "AirPlay",
+        body: "将直播电视、电影和剧集投放到你的 Apple TV——包括导入的字幕。",
       },
       {
         title: "HDR 播放",
@@ -106,6 +115,10 @@ const zh: Dictionary = {
       {
         title: "手势控制",
         body: "滑动调节亮度与音量，快进/快退 ±15 秒，长按以 2× 速度播放。",
+      },
+      {
+        title: "排序与筛选",
+        body: "对电影、剧集和频道进行排序与筛选——还有平铺的“全部电影”“全部剧集”和“全部频道”视图。",
       },
       {
         title: "全局搜索",
@@ -165,14 +178,11 @@ const zh: Dictionary = {
     label: "获取应用",
     heading: "永久免费——在你所有的设备上。",
     intro:
-      "iOS 和 Android 通过官方商店发布并自动更新。桌面版和侧载版本发布在 GitHub Releases。",
+      "iPhone 与 iPad 应用通过 App Store 发布并自动更新。在 Mac 上，上一代应用仍然可用。",
     subs: {
       "App Store": "iPhone 与 iPad",
-      "Google Play": "Android 手机与平板",
-      macOS: "通用版 · Intel 与 Apple Silicon",
-      Windows: "x64 · Windows 10 与 11",
-      Linux: "x64 · 大多数发行版",
-      "GitHub Releases": "APK、IPA 与桌面版本",
+      macOS: "上一代应用",
+      "GitHub Releases": "源代码与发布说明",
     },
   },
 
@@ -199,7 +209,7 @@ const zh: Dictionary = {
 
   footer: {
     tagline:
-      "适用于 iOS、Android、macOS、Windows 和 Linux 的免费开源 IPTV 播放器。无广告。无跟踪。无费用。",
+      "适用于 iPhone、iPad 和 Mac 的免费开源 IPTV 播放器。无广告。无跟踪。无费用。",
     product: "产品",
     help: "帮助",
     project: "项目",
@@ -282,7 +292,7 @@ const zh: Dictionary = {
       },
       {
         q: "Another IPTV Player 在哪些平台上可用？",
-        a: "iOS（iPhone 与 iPad）、Android、macOS、Windows 和 Linux。请查看我们的网站或 GitHub 获取最新版本。",
+        a: "iOS（iPhone 与 iPad），通过 App Store 提供。在 macOS 上，上一代应用仍然可用。请查看我们的网站或 GitHub 获取最新动态。",
       },
       {
         q: "如何报告错误或请求功能？",

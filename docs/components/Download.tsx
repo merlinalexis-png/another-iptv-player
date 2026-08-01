@@ -1,21 +1,11 @@
 import type { Dictionary } from "@/lib/i18n/dictionaries/en";
 import { DOWNLOADS, LINKS } from "@/lib/data";
-import {
-  AppleIcon,
-  ArrowUpRight,
-  CoffeeIcon,
-  LinuxIcon,
-  PlayStoreIcon,
-  WindowsIcon,
-} from "./icons";
+import { AppleIcon, ArrowUpRight, CoffeeIcon } from "./icons";
 import { Reveal, SectionLabel } from "./Reveal";
 
 function iconFor(name: string) {
   if (name === "App Store" || name === "macOS")
     return <AppleIcon className="h-5 w-5" />;
-  if (name === "Google Play") return <PlayStoreIcon className="h-5 w-5" />;
-  if (name === "Windows") return <WindowsIcon className="h-5 w-5" />;
-  if (name === "Linux") return <LinuxIcon className="h-5 w-5" />;
   return <ArrowUpRight className="h-5 w-5" />;
 }
 

@@ -6,7 +6,7 @@ const es: Dictionary = {
     home: {
       title: "Another IPTV Player — Reproductor IPTV gratuito y de código abierto",
       description:
-        "Un reproductor IPTV gratuito, de código abierto y multiplataforma. Todas las funciones premium de los reproductores de pago — Xtream Codes y M3U, descargas sin conexión, PiP, HDR — sin anuncios, sin rastreo, sin cuotas.",
+        "Un reproductor IPTV gratuito y de código abierto para iPhone, iPad y Mac. Todas las funciones premium de los reproductores de pago — Xtream Codes y M3U, guía de TV (EPG), AirPlay, descargas sin conexión, PiP, HDR — sin anuncios, sin rastreo, sin cuotas.",
     },
     faq: {
       title: "Preguntas frecuentes — Another IPTV Player",
@@ -46,9 +46,8 @@ const es: Dictionary = {
     titleHighlight: "magnífico",
     titlePost: ".",
     subtitle:
-      "Todas las funciones premium de los reproductores IPTV de pago — Xtream Codes y M3U, seguir viendo, reproducción automática del siguiente episodio — gratis, en todos tus dispositivos.",
+      "Todas las funciones premium de los reproductores IPTV de pago — Xtream Codes y M3U, guía de TV (EPG), AirPlay, seguir viendo — gratis, en iPhone, iPad y Mac.",
     ctaAppStore: "App Store",
-    ctaGooglePlay: "Google Play",
     ctaGithub: "Dar estrella en GitHub",
   },
 
@@ -56,6 +55,8 @@ const es: Dictionary = {
     "TV en vivo",
     "Películas",
     "Series",
+    "Guía de TV (EPG)",
+    "AirPlay",
     "Xtream Codes",
     "M3U / M3U8",
     "Descargas sin conexión",
@@ -88,8 +89,16 @@ const es: Dictionary = {
         body: "Añade listas desde una URL remota o un archivo local .m3u / .m3u8.",
       },
       {
+        title: "Guía de TV (EPG)",
+        body: "Una guía de programación completa para la TV en vivo — mira qué se emite ahora y qué viene después, con canales agrupados en categorías plegables.",
+      },
+      {
         title: "Imagen en imagen",
-        body: "Lleva el vídeo a una ventana flotante y sigue viéndolo mientras haces otras cosas.",
+        body: "Lleva el vídeo a una ventana flotante — dentro de la app o en todo el sistema — y sigue viéndolo mientras haces otras cosas.",
+      },
+      {
+        title: "AirPlay",
+        body: "Envía TV en vivo, películas y series a tu Apple TV — incluidos los subtítulos importados.",
       },
       {
         title: "Reproducción HDR",
@@ -106,6 +115,10 @@ const es: Dictionary = {
       {
         title: "Controles por gestos",
         body: "Desliza para brillo y volumen, salta ±15 s, mantén pulsado para 2× de velocidad.",
+      },
+      {
+        title: "Ordenar y filtrar",
+        body: "Ordena y filtra películas, series y canales — además de las vistas planas «Todas las películas», «Todas las series» y «Todos los canales».",
       },
       {
         title: "Búsqueda global",
@@ -165,14 +178,11 @@ const es: Dictionary = {
     label: "Obtener la app",
     heading: "Gratis, para siempre — en todos tus dispositivos.",
     intro:
-      "iOS y Android se distribuyen por las tiendas oficiales con actualizaciones automáticas. Las versiones de escritorio y sideload se publican en GitHub Releases.",
+      "La app para iPhone y iPad se distribuye por el App Store con actualizaciones automáticas. En el Mac sigue disponible la app de la generación anterior.",
     subs: {
       "App Store": "iPhone y iPad",
-      "Google Play": "Teléfonos y tabletas Android",
-      macOS: "Universal · Intel y Apple Silicon",
-      Windows: "x64 · Windows 10 y 11",
-      Linux: "x64 · la mayoría de distribuciones",
-      "GitHub Releases": "APK, IPA y versiones de escritorio",
+      macOS: "App de la generación anterior",
+      "GitHub Releases": "Código fuente y notas de las versiones",
     },
   },
 
@@ -199,7 +209,7 @@ const es: Dictionary = {
 
   footer: {
     tagline:
-      "Un reproductor IPTV gratuito y de código abierto para iOS, Android, macOS, Windows y Linux. Sin anuncios. Sin rastreo. Sin cuotas.",
+      "Un reproductor IPTV gratuito y de código abierto para iPhone, iPad y Mac. Sin anuncios. Sin rastreo. Sin cuotas.",
     product: "Producto",
     help: "Ayuda",
     project: "Proyecto",
@@ -282,7 +292,7 @@ const es: Dictionary = {
       },
       {
         q: "¿En qué plataformas está disponible Another IPTV Player?",
-        a: "iOS (iPhone y iPad), Android, macOS, Windows y Linux. Consulta nuestra web o GitHub para las últimas versiones.",
+        a: "iOS (iPhone y iPad) a través del App Store. En macOS sigue disponible la app de la generación anterior. Consulta nuestra web o GitHub para las últimas novedades.",
       },
       {
         q: "¿Cómo informo de un error o solicito una función?",

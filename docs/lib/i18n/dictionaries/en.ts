@@ -4,7 +4,7 @@ const en = {
     home: {
       title: "Another IPTV Player — Free & Open Source IPTV Streaming",
       description:
-        "A free, open-source, multi-platform IPTV player. All the premium features of paid players — Xtream Codes & M3U support, offline downloads, PiP, HDR — with no ads, no tracking, no fees.",
+        "A free, open-source IPTV player for iPhone, iPad & Mac. All the premium features of paid players — Xtream Codes & M3U support, TV Guide (EPG), AirPlay, offline downloads, PiP, HDR — with no ads, no tracking, no fees.",
     },
     faq: {
       title: "FAQ — Another IPTV Player",
@@ -44,9 +44,8 @@ const en = {
     titleHighlight: "beautiful",
     titlePost: " player.",
     subtitle:
-      "All the premium features of paid IPTV players — Xtream Codes & M3U support, continue watching, auto-play next — for free, on every device you own.",
+      "All the premium features of paid IPTV players — Xtream Codes & M3U support, TV Guide (EPG), AirPlay, continue watching — for free, on iPhone, iPad, and Mac.",
     ctaAppStore: "App Store",
-    ctaGooglePlay: "Google Play",
     ctaGithub: "Star on GitHub",
   },
 
@@ -54,6 +53,8 @@ const en = {
     "Live TV",
     "Movies",
     "Series",
+    "TV Guide (EPG)",
+    "AirPlay",
     "Xtream Codes",
     "M3U / M3U8",
     "Offline Downloads",
@@ -86,8 +87,16 @@ const en = {
         body: "Add playlists from a remote URL or a local .m3u / .m3u8 file.",
       },
       {
+        title: "TV Guide (EPG)",
+        body: "A full program guide for live TV — see what's on now and next, with channels grouped by collapsible categories.",
+      },
+      {
         title: "Picture-in-Picture",
-        body: "Pop the video into a floating window and keep watching while you multitask.",
+        body: "Pop the video into a floating window — inside the app or system-wide — and keep watching while you multitask.",
+      },
+      {
+        title: "AirPlay",
+        body: "Beam live TV, movies, and series to your Apple TV — imported subtitles included.",
       },
       {
         title: "HDR Playback",
@@ -104,6 +113,10 @@ const en = {
       {
         title: "Gesture Controls",
         body: "Swipe for brightness and volume, skip ±15s, long-press for 2× speed.",
+      },
+      {
+        title: "Sort & Filter",
+        body: "Sort and filter movies, series, and channels — plus flat “All Movies”, “All Series” and “All Channels” views.",
       },
       {
         title: "Global Search",
@@ -163,14 +176,11 @@ const en = {
     label: "Get the app",
     heading: "Free, forever — on all your devices.",
     intro:
-      "iOS and Android ship through the official stores with automatic updates. Desktop and sideload builds are published on GitHub Releases.",
+      "The iPhone & iPad app ships through the App Store with automatic updates. On the Mac, the previous-generation app is still available.",
     subs: {
       "App Store": "iPhone & iPad",
-      "Google Play": "Android phones & tablets",
-      macOS: "Universal · Intel & Apple Silicon",
-      Windows: "x64 · Windows 10 & 11",
-      Linux: "x64 · most distributions",
-      "GitHub Releases": "APK, IPA & desktop builds",
+      macOS: "Previous-generation app",
+      "GitHub Releases": "Source code & release notes",
     } as Record<string, string>,
   },
 
@@ -197,7 +207,7 @@ const en = {
 
   footer: {
     tagline:
-      "A free & open-source IPTV player for iOS, Android, macOS, Windows, and Linux. No ads. No tracking. No fees.",
+      "A free & open-source IPTV player for iPhone, iPad, and Mac. No ads. No tracking. No fees.",
     product: "Product",
     help: "Help",
     project: "Project",
@@ -280,7 +290,7 @@ const en = {
       },
       {
         q: "Which platforms is Another IPTV Player available on?",
-        a: "iOS (iPhone & iPad), Android, macOS, Windows, and Linux. Check our website or GitHub for the latest builds.",
+        a: "iOS (iPhone & iPad) via the App Store. On macOS, the previous-generation app is still available. Check our website or GitHub for the latest updates.",
       },
       {
         q: "How do I report a bug or request a feature?",

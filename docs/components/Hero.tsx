@@ -8,7 +8,6 @@ import {
   ArrowUpRight,
   CoffeeIcon,
   GithubIcon,
-  PlayStoreIcon,
 } from "./icons";
 
 const container = {
@@ -119,15 +118,6 @@ export function Hero({ d }: { d: Dictionary }) {
             >
               <AppleIcon className="h-4.5 w-4.5" />
               {h.ctaAppStore}
-            </a>
-            <a
-              href={LINKS.googlePlay}
-              target="_blank"
-              rel="noreferrer noopener external"
-              className="group inline-flex items-center gap-2.5 rounded-xl bg-snow px-5 py-3 text-sm font-semibold text-ink transition-transform hover:-translate-y-0.5"
-            >
-              <PlayStoreIcon className="h-4.5 w-4.5" />
-              {h.ctaGooglePlay}
             </a>
             <a
               href={LINKS.github}

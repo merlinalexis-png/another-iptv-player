@@ -42,7 +42,7 @@ export async function generateMetadata({
       "M3U player",
       "free IPTV",
       "offline IPTV downloads",
-      "iOS Android Windows macOS Linux IPTV",
+      "iOS iPadOS macOS IPTV",
     ],
     authors: [{ name: "ogulcan ozcan" }],
     openGraph: {
