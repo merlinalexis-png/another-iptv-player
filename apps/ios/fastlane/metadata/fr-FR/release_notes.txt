@@ -1,3 +1,7 @@
-• Importez des fichiers de sous-titres externes (SRT, ASS, VTT et plus) pour les films et séries
-• Les liens M3U des fournisseurs Xtream se connectent désormais automatiquement via l'API Xtream — corrige l'« Erreur serveur » lorsque le fournisseur bloque les téléchargements M3U
-• Plus de textes traduits dans toute l'application
+• Nouveau moteur de lecture : démarrage plus rapide, lecture plus fluide et plus de formats pris en charge
+• AirPlay amélioré : davantage de chaînes et de formats diffusés vers l'Apple TV, sous-titres importés inclus
+• Lecture automatique de l'épisode suivant avec compte à rebours annulable
+• Réglage du délai audio pour corriger la synchronisation A/V
+• Tri et filtres pour les films, séries et chaînes, avec les nouvelles vues « Tous les films », « Toutes les séries » et « Toutes les chaînes »
+• Le guide TV regroupe désormais les chaînes par catégories repliables
+• Bien plus rapide avec les très grandes playlists, et de nombreuses corrections

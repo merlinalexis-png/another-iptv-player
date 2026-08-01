@@ -1,3 +1,7 @@
-• Import external subtitle files (SRT, ASS, VTT and more) for movies and series
-• M3U links from Xtream providers now connect through the Xtream API automatically — fixes "Server error" when the provider blocks M3U downloads
-• More translated texts across the app
+• All-new video player engine — faster startup, smoother playback and wider format support
+• Better AirPlay — more channels and formats stream to Apple TV, imported subtitles included
+• Auto-play the next episode with a cancelable countdown
+• Audio delay adjustment to fix A/V sync
+• Sort and filter movies, series and channels, plus new "All Movies", "All Series" and "All Channels" views
+• TV Guide now groups channels by category with collapsible headers
+• Much faster with very large playlists, plus many bug fixes

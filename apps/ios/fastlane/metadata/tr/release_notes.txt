@@ -1,3 +1,7 @@
-• Film ve diziler için harici altyazı dosyası ekleme (SRT, ASS, VTT ve daha fazlası)
-• Xtream sağlayıcılarının M3U linkleri artık otomatik olarak Xtream API üzerinden bağlanıyor — sağlayıcı M3U indirmeyi engellediğinde alınan "Sunucu hatası" düzeltildi
-• Uygulama genelinde daha fazla çevrilmiş metin
+• Yepyeni video oynatıcı motoru — daha hızlı açılış, daha akıcı oynatma ve daha geniş format desteği
+• Daha iyi AirPlay — daha fazla kanal ve format Apple TV'ye aktarılıyor, içe aktarılan altyazılar dahil
+• Sonraki bölümü iptal edilebilir geri sayımla otomatik oynatma
+• Ses/görüntü senkronu için ses gecikmesi ayarı
+• Film, dizi ve kanallarda sıralama ve filtreleme; yeni "Tüm Filmler", "Tüm Diziler" ve "Tüm Kanallar" görünümleri
+• TV Rehberi kanalları artık katlanabilir kategori başlıkları altında grupluyor
+• Çok büyük listelerde belirgin hız artışı ve birçok hata düzeltmesi

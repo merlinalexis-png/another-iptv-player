@@ -1,3 +1,7 @@
-• Externe Untertiteldateien (SRT, ASS, VTT und mehr) für Filme und Serien importieren
-• M3U-Links von Xtream-Anbietern verbinden sich jetzt automatisch über die Xtream-API — behebt den „Serverfehler", wenn der Anbieter M3U-Downloads blockiert
-• Mehr übersetzte Texte in der gesamten App
+• Komplett neue Player-Engine — schnellerer Start, flüssigere Wiedergabe und mehr unterstützte Formate
+• Besseres AirPlay — mehr Sender und Formate laufen auf Apple TV, importierte Untertitel inklusive
+• Nächste Folge automatisch abspielen, mit abbrechbarem Countdown
+• Einstellbare Audioverzögerung zur Korrektur der A/V-Synchronisation
+• Filme, Serien und Sender sortieren und filtern, plus neue Ansichten „Alle Filme", „Alle Serien" und „Alle Sender"
+• Der TV-Guide gruppiert Sender jetzt in einklappbare Kategorien
+• Deutlich schneller bei sehr großen Playlists, dazu viele Fehlerbehebungen
