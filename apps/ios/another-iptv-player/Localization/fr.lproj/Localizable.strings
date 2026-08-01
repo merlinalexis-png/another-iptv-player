@@ -432,6 +432,7 @@
 "player.a11y.next_episode" = "Épisode suivant";
 "player.a11y.previous_item" = "Précédent";
 "player.a11y.next_item" = "Suivant";
+"player.a11y.expand_mini_player" = "Passer en plein écran";
 "catalog.load_failed.title" = "Impossible de charger le contenu";
 "settings.show_password" = "Afficher le mot de passe";
 "settings.hide_password" = "Masquer le mot de passe";
@@ -465,6 +466,11 @@
 "epg.error.server" = "Erreur du serveur (HTTP %d).";
 "epg.error.too_large" = "Le fichier du guide est trop volumineux.";
 "epg.guide.title" = "Guide TV";
+"epg.categories.expand_all" = "Tout développer";
+"epg.categories.collapse_all" = "Tout réduire";
+"epg.categories.menu_a11y" = "Catégories";
+"epg.categories.collapsed_a11y" = "Réduit";
+"epg.categories.expanded_a11y" = "Développé";
 "epg.jump_to_now" = "Maintenant";
 "epg.last_updated" = "Dernière mise à jour";
 "epg.never_updated" = "Jamais";
@@ -483,3 +489,22 @@
 "epg.settings.section_title" = "Guide TV (EPG)";
 "epg.settings.url_footer" = "URL XMLTV utilisée pour le guide des programmes. Détectée automatiquement à partir de la playlist lorsqu'elle est disponible.";
 "epg.settings.url_placeholder" = "URL EPG (XMLTV)";
+
+// MARK: - VOD sort & filter
+"sort.title" = "Trier";
+"sort.default" = "Par défaut";
+"sort.name_asc" = "Nom (A–Z)";
+"sort.name_desc" = "Nom (Z–A)";
+"sort.rating_desc" = "Note";
+"sort.recently_added" = "Ajoutés récemment";
+"filter.file_type" = "Type de fichier";
+"filter.clear" = "Effacer le filtre";
+
+// MARK: - Browse all & filters
+"browse.all_movies" = "Tous les films";
+"browse.all_series" = "Toutes les séries";
+"browse.all_live" = "Toutes les chaînes";
+"filter.genre" = "Genre";
+"filter.title" = "Filtre";
+"filter.catchup" = "Rattrapage disponible";
+"filter.has_epg" = "Avec EPG";

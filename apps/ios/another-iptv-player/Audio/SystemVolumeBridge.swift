@@ -72,7 +72,6 @@ final class MPVolumeHostingView: UIView {
     let v = MPVolumeView()
     v.alpha = 0.02
     v.showsVolumeSlider = true
-    v.showsRouteButton = false
     v.isUserInteractionEnabled = false
     self.volumeView = v
     super.init(frame: .zero)

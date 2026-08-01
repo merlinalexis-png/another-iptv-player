@@ -193,6 +193,8 @@ struct MiniPlayerChrome: View {
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture { onExpand() }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel(L("player.a11y.expand_mini_player"))
 
             // Top row: play/pause on the leading (top-left, YouTube-style), close on the trailing.
             VStack {

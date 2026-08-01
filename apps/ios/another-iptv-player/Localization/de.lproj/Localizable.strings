@@ -432,6 +432,7 @@
 "player.a11y.next_episode" = "Nächste Folge";
 "player.a11y.previous_item" = "Zurück";
 "player.a11y.next_item" = "Weiter";
+"player.a11y.expand_mini_player" = "Auf Vollbild erweitern";
 "catalog.load_failed.title" = "Inhalte konnten nicht geladen werden";
 "settings.show_password" = "Passwort anzeigen";
 "settings.hide_password" = "Passwort verbergen";
@@ -465,6 +466,11 @@
 "epg.error.server" = "Serverfehler (HTTP %d).";
 "epg.error.too_large" = "Die Programmdatei ist zu groß.";
 "epg.guide.title" = "TV-Programm";
+"epg.categories.expand_all" = "Alle ausklappen";
+"epg.categories.collapse_all" = "Alle einklappen";
+"epg.categories.menu_a11y" = "Kategorien";
+"epg.categories.collapsed_a11y" = "Eingeklappt";
+"epg.categories.expanded_a11y" = "Ausgeklappt";
 "epg.jump_to_now" = "Jetzt";
 "epg.last_updated" = "Zuletzt aktualisiert";
 "epg.never_updated" = "Nie";
@@ -483,3 +489,22 @@
 "epg.settings.section_title" = "TV-Programm (EPG)";
 "epg.settings.url_footer" = "XMLTV-URL für das TV-Programm. Wird, sofern verfügbar, automatisch aus der Playlist erkannt.";
 "epg.settings.url_placeholder" = "EPG-URL (XMLTV)";
+
+// MARK: - VOD sort & filter
+"sort.title" = "Sortieren";
+"sort.default" = "Standard";
+"sort.name_asc" = "Name (A–Z)";
+"sort.name_desc" = "Name (Z–A)";
+"sort.rating_desc" = "Bewertung";
+"sort.recently_added" = "Kürzlich hinzugefügt";
+"filter.file_type" = "Dateityp";
+"filter.clear" = "Filter löschen";
+
+// MARK: - Browse all & filters
+"browse.all_movies" = "Alle Filme";
+"browse.all_series" = "Alle Serien";
+"browse.all_live" = "Alle Sender";
+"filter.genre" = "Genre";
+"filter.title" = "Filter";
+"filter.catchup" = "Catch-up verfügbar";
+"filter.has_epg" = "Mit EPG";

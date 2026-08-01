@@ -432,6 +432,7 @@
 "player.a11y.next_episode" = "अगला एपिसोड";
 "player.a11y.previous_item" = "पिछला";
 "player.a11y.next_item" = "अगला";
+"player.a11y.expand_mini_player" = "पूर्ण स्क्रीन में बड़ा करें";
 "catalog.load_failed.title" = "सामग्री लोड नहीं हो सकी";
 "settings.show_password" = "पासवर्ड दिखाएँ";
 "settings.hide_password" = "पासवर्ड छिपाएँ";
@@ -465,6 +466,11 @@
 "epg.error.server" = "सर्वर त्रुटि (HTTP %d)।";
 "epg.error.too_large" = "गाइड फ़ाइल बहुत बड़ी है।";
 "epg.guide.title" = "TV गाइड";
+"epg.categories.expand_all" = "सभी विस्तृत करें";
+"epg.categories.collapse_all" = "सभी संक्षिप्त करें";
+"epg.categories.menu_a11y" = "श्रेणियाँ";
+"epg.categories.collapsed_a11y" = "संक्षिप्त";
+"epg.categories.expanded_a11y" = "विस्तृत";
 "epg.jump_to_now" = "अभी";
 "epg.last_updated" = "अंतिम अपडेट";
 "epg.never_updated" = "कभी नहीं";
@@ -483,3 +489,22 @@
 "epg.settings.section_title" = "TV गाइड (EPG)";
 "epg.settings.url_footer" = "कार्यक्रम गाइड के लिए उपयोग किया जाने वाला XMLTV URL। उपलब्ध होने पर प्लेलिस्ट से स्वचालित रूप से पता लगाया जाता है।";
 "epg.settings.url_placeholder" = "EPG (XMLTV) URL";
+
+// MARK: - VOD sort & filter
+"sort.title" = "क्रमबद्ध करें";
+"sort.default" = "डिफ़ॉल्ट";
+"sort.name_asc" = "नाम (A–Z)";
+"sort.name_desc" = "नाम (Z–A)";
+"sort.rating_desc" = "रेटिंग";
+"sort.recently_added" = "हाल ही में जोड़े गए";
+"filter.file_type" = "फ़ाइल प्रकार";
+"filter.clear" = "फ़िल्टर साफ़ करें";
+
+// MARK: - Browse all & filters
+"browse.all_movies" = "सभी फ़िल्में";
+"browse.all_series" = "सभी सीरीज़";
+"browse.all_live" = "सभी चैनल";
+"filter.genre" = "शैली";
+"filter.title" = "फ़िल्टर";
+"filter.catchup" = "कैच-अप उपलब्ध";
+"filter.has_epg" = "EPG उपलब्ध";

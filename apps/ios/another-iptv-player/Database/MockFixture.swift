@@ -39,7 +39,7 @@ enum MockFixture {
     }
 
     private static func insertDemoPlaylist(db: Database) throws {
-        var playlist = Playlist(
+        let playlist = Playlist(
             id: demoPlaylistId,
             name: "Demo Playlist",
             serverURL: "https://example.com",
@@ -57,7 +57,7 @@ enum MockFixture {
             ("live-kids", "Kids"),
         ]
         for (idx, (id, name)) in categories.enumerated() {
-            var c = DBCategory(id: id, name: name, parentId: nil, type: "live", sortIndex: idx, playlistId: demoPlaylistId)
+            let c = DBCategory(id: id, name: name, parentId: nil, type: "live", sortIndex: idx, playlistId: demoPlaylistId)
             try c.insert(db)
         }
 
@@ -77,7 +77,7 @@ enum MockFixture {
             (402, "Learning Time",         "live-kids"),
         ]
         for (idx, (sid, name, cat)) in channels.enumerated() {
-            var s = DBLiveStream(
+            let s = DBLiveStream(
                 streamId: sid,
                 name: name,
                 streamIcon: posterURL(seed: "live-\(sid)", w: 200, h: 200),
@@ -99,7 +99,7 @@ enum MockFixture {
             ("vod-doc",      "Documentary"),
         ]
         for (idx, (id, name)) in categories.enumerated() {
-            var c = DBCategory(id: id, name: name, parentId: nil, type: "vod", sortIndex: idx, playlistId: demoPlaylistId)
+            let c = DBCategory(id: id, name: name, parentId: nil, type: "vod", sortIndex: idx, playlistId: demoPlaylistId)
             try c.insert(db)
         }
 
@@ -118,7 +118,7 @@ enum MockFixture {
             (1012, "Whispers in the Wind", "vod-drama",   "2022", "7.6"),
         ]
         for (idx, (sid, name, cat, year, rating)) in movies.enumerated() {
-            var s = DBVODStream(
+            let s = DBVODStream(
                 streamId: sid,
                 name: name,
                 streamIcon: posterURL(seed: "vod-\(sid)", w: 400, h: 600),
@@ -144,7 +144,7 @@ enum MockFixture {
             ("series-doc",      "Documentary"),
         ]
         for (idx, (id, name)) in categories.enumerated() {
-            var c = DBCategory(id: id, name: name, parentId: nil, type: "series", sortIndex: idx, playlistId: demoPlaylistId)
+            let c = DBCategory(id: id, name: name, parentId: nil, type: "series", sortIndex: idx, playlistId: demoPlaylistId)
             try c.insert(db)
         }
 
@@ -159,7 +159,7 @@ enum MockFixture {
             (2008, "Coastlines",          "series-doc",      "8.4"),
         ]
         for (idx, (sid, name, cat, rating)) in series.enumerated() {
-            var s = DBSeries(
+            let s = DBSeries(
                 seriesId: sid,
                 name: name,
                 cover: posterURL(seed: "series-\(sid)", w: 400, h: 600),

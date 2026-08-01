@@ -8,17 +8,45 @@ struct EPGGuideRow: Identifiable, Equatable, Hashable {
     let displayName: String
     let iconURL: URL?
     let liveStream: DBLiveStream?   // Xtream only (catch-up + live play)
+    /// Category the channel belongs to, used to group rows under collapsible
+    /// headers. `categoryId` is the stable grouping key; `categoryTitle` is shown.
+    let categoryId: String
+    let categoryTitle: String
     /// Lowercased display name, precomputed once so search never re-lowercases
     /// thousands of names on every keystroke.
     let searchName: String
 
-    init(id: String, channelKey: String, displayName: String, iconURL: URL?, liveStream: DBLiveStream?) {
+    init(id: String, channelKey: String, displayName: String, iconURL: URL?,
+         liveStream: DBLiveStream?, categoryId: String, categoryTitle: String) {
         self.id = id
         self.channelKey = channelKey
         self.displayName = displayName
         self.iconURL = iconURL
         self.liveStream = liveStream
+        self.categoryId = categoryId
+        self.categoryTitle = categoryTitle
         self.searchName = displayName.lowercased()
+    }
+}
+
+/// A collapsible category header row in the guide.
+struct EPGGuideSectionHeader: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let channelCount: Int
+    let collapsed: Bool
+}
+
+/// One rendered row of the guide: either a category header or a channel.
+enum EPGGuideItem: Identifiable, Equatable {
+    case header(EPGGuideSectionHeader)
+    case channel(EPGGuideRow)
+
+    var id: String {
+        switch self {
+        case .header(let header): return "hdr:" + header.id
+        case .channel(let row): return row.id
+        }
     }
 }
 
@@ -52,19 +80,29 @@ final class EPGGuideViewModel: ObservableObject {
 
     let source: Source
     @Published private(set) var rows: [EPGGuideRow] = []
-    /// Cached result of applying `searchQuery` to `rows`. Recomputed only when the
-    /// query or the row set changes — never per scroll frame, which is why the grid
-    /// reads this instead of filtering inside its body.
-    @Published private(set) var filteredRows: [EPGGuideRow] = []
+    /// The flat sequence the grid renders: category headers interleaved with the
+    /// channels of each (expanded) category. Recomputed only when the row set,
+    /// search query, or a collapse toggle changes — never per scroll frame.
+    @Published private(set) var items: [EPGGuideItem] = []
+    /// Category ids the user has collapsed. Persisted per playlist so the guide
+    /// reopens in the same shape.
+    @Published private(set) var collapsedCategories: Set<String>
     @Published private(set) var layouts: [String: EPGRowLayout] = [:]
     @Published var selectedDay: Date
     @Published private(set) var state: GuideState = .loading
     @Published var searchQuery: String = "" {
         didSet {
             guard searchQuery != oldValue else { return }
-            recomputeFilteredRows()
+            recomputeItems()
         }
     }
+
+    /// Categories in display order with their channels. Built once per row set;
+    /// `items` is derived from this plus the search query and collapse state.
+    private var orderedSections: [(id: String, title: String, rows: [EPGGuideRow])] = []
+
+    /// Grouping key/title for channels that belong to no category.
+    private static let uncategorizedId = "__epg_uncategorized__"
 
     private var layoutVersion = 0
     private let calendar = Calendar.current
@@ -79,6 +117,7 @@ final class EPGGuideViewModel: ObservableObject {
     init(source: Source) {
         self.source = source
         self.selectedDay = Calendar.current.startOfDay(for: Date())
+        self.collapsedCategories = Self.loadCollapsed(playlistId: source.playlist.id)
     }
 
     var playlist: Playlist { source.playlist }
@@ -90,10 +129,90 @@ final class EPGGuideViewModel: ObservableObject {
         return (-1...7).compactMap { calendar.date(byAdding: .day, value: $0, to: today) }
     }
 
-    private func recomputeFilteredRows() {
+    /// True when there is more than one category to show — headers are only worth
+    /// drawing then; a single-category playlist renders as a flat list.
+    var hasCategories: Bool { orderedSections.count > 1 }
+
+    /// Groups `rows` into categories in first-appearance order. Called once per row
+    /// set; cheap re-derivations (search, collapse) work off the result.
+    private func rebuildSections() {
+        var order: [String] = []
+        var byId: [String: (title: String, rows: [EPGGuideRow])] = [:]
+        for row in rows {
+            if byId[row.categoryId] == nil {
+                order.append(row.categoryId)
+                byId[row.categoryId] = (row.categoryTitle, [row])
+            } else {
+                byId[row.categoryId]?.rows.append(row)
+            }
+        }
+        orderedSections = order.map { (id: $0, title: byId[$0]?.title ?? $0, rows: byId[$0]?.rows ?? []) }
+    }
+
+    /// Rebuilds `items` from the sections, honouring the search query and collapse
+    /// state. While searching, collapse is ignored so matches are always visible.
+    private func recomputeItems() {
         let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { filteredRows = rows; return }
-        filteredRows = rows.filter { $0.searchName.contains(q) }
+        let searching = !q.isEmpty
+        let showHeaders = orderedSections.count > 1
+        var result: [EPGGuideItem] = []
+        for section in orderedSections {
+            let sectionRows = searching ? section.rows.filter { $0.searchName.contains(q) } : section.rows
+            guard !sectionRows.isEmpty else { continue }
+            let collapsed = !searching && collapsedCategories.contains(section.id)
+            if showHeaders {
+                result.append(.header(EPGGuideSectionHeader(
+                    id: section.id, title: section.title,
+                    channelCount: sectionRows.count, collapsed: collapsed)))
+            }
+            if !collapsed {
+                result.append(contentsOf: sectionRows.map { EPGGuideItem.channel($0) })
+            }
+        }
+        items = result
+    }
+
+    func toggleCategory(_ id: String) {
+        if collapsedCategories.contains(id) {
+            collapsedCategories.remove(id)
+        } else {
+            collapsedCategories.insert(id)
+        }
+        persistCollapsed()
+        recomputeItems()
+    }
+
+    func setAllCollapsed(_ collapsed: Bool) {
+        collapsedCategories = collapsed ? Set(orderedSections.map(\.id)) : []
+        persistCollapsed()
+        recomputeItems()
+    }
+
+    /// Grouping key + display title for a channel's category, folding empty ids and
+    /// names into a shared "Uncategorized" bucket.
+    private static func category(id: String?, name: String?) -> (id: String, title: String) {
+        let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmedId = id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmedName.isEmpty && trimmedId.isEmpty {
+            return (uncategorizedId, L("content.uncategorized"))
+        }
+        let key = trimmedId.isEmpty ? trimmedName : trimmedId
+        let title = trimmedName.isEmpty ? trimmedId : trimmedName
+        return (key, title)
+    }
+
+    // MARK: - Collapse persistence
+
+    private static func collapseKey(_ playlistId: UUID) -> String {
+        "epg.collapsedCategories.\(playlistId.uuidString)"
+    }
+
+    private static func loadCollapsed(playlistId: UUID) -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: collapseKey(playlistId)) ?? [])
+    }
+
+    private func persistCollapsed() {
+        UserDefaults.standard.set(Array(collapsedCategories), forKey: Self.collapseKey(playlist.id))
     }
 
     func load() async {
@@ -131,13 +250,16 @@ final class EPGGuideViewModel: ObservableObject {
         let epg = EPGStore.shared
         switch source {
         case .xtream:
-            let streams = PlaylistContentStore.shared.liveStreams.map(\.stream)
-            rows = streams.map { stream in
+            let entries = PlaylistContentStore.shared.liveStreams
+            rows = entries.map { entry in
+                let stream = entry.stream
                 let idKey = EPGConstants.normalizeChannelKey(stream.epgChannelId)
                 let nameKey = EPGConstants.normalizeChannelKey(stream.name)
                 let key = epg.storedKey(idKey: idKey, nameKey: nameKey) ?? idKey ?? nameKey ?? "#stream:\(stream.streamId)"
+                let category = Self.category(id: stream.categoryId, name: entry.categoryName)
                 return EPGGuideRow(id: stream.id, channelKey: key, displayName: stream.name,
-                                   iconURL: stream.streamIcon.flatMap { URL(string: $0) }, liveStream: stream)
+                                   iconURL: stream.streamIcon.flatMap { URL(string: $0) }, liveStream: stream,
+                                   categoryId: category.id, categoryTitle: category.title)
             }
         case .m3u:
             let channels = M3UContentStore.shared.channels.filter { isLiveChannel($0) }
@@ -145,11 +267,14 @@ final class EPGGuideViewModel: ObservableObject {
                 let idKey = EPGConstants.normalizeChannelKey(channel.tvgId)
                 let nameKey = EPGConstants.normalizeChannelKey(channel.tvgName ?? channel.name)
                 let key = epg.storedKey(idKey: idKey, nameKey: nameKey) ?? idKey ?? nameKey ?? channel.id
+                let category = Self.category(id: channel.groupTitle, name: channel.groupTitle)
                 return EPGGuideRow(id: channel.id, channelKey: key, displayName: channel.name,
-                                   iconURL: channel.tvgLogo.flatMap { URL(string: $0) }, liveStream: nil)
+                                   iconURL: channel.tvgLogo.flatMap { URL(string: $0) }, liveStream: nil,
+                                   categoryId: category.id, categoryTitle: category.title)
             }
         }
-        recomputeFilteredRows()
+        rebuildSections()
+        recomputeItems()
     }
 
     private func isLiveChannel(_ channel: DBM3UChannel) -> Bool {
@@ -241,7 +366,9 @@ final class EPGGuideViewModel: ObservableObject {
     /// filler is added when the first programme starts after the day start.
     /// `nonisolated static` so layout precompute can run off the main actor.
     nonisolated static func cells(for programmes: [EPGProgramme], dayStart: Date, dayEnd: Date, hourWidth: CGFloat) -> [EPGCellLayout] {
-        let dayWidth = hourWidth * 24
+        // Use the real elapsed hours between dayStart/dayEnd rather than a fixed 24
+        // so DST transition days (23h/25h) don't misplace the trailing filler cell.
+        let dayWidth = CGFloat(dayEnd.timeIntervalSince(dayStart) / 3600) * hourWidth
         func x(_ date: Date) -> CGFloat {
             CGFloat(date.timeIntervalSince(dayStart) / 3600) * hourWidth
         }

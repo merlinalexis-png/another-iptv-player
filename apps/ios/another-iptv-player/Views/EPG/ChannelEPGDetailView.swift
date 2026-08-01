@@ -11,6 +11,7 @@ struct ChannelEPGDetailView: View {
 
     @Query<ChannelEPGRequest> private var rows: [DBEPGProgramme]
     @State private var selected: EPGProgramme?
+    @State private var hasScrolledToNow = false
     @Environment(\.epgSnapshot) private var epgSnapshot
 
     init(playlist: Playlist, channelKey: String, displayName: String, iconURL: URL?, liveStream: DBLiveStream?) {
@@ -66,9 +67,10 @@ struct ChannelEPGDetailView: View {
             }
             .listStyle(.plain)
             .onAppear {
-                if let current = programmes.first(where: { $0.isCurrent(at: Date()) }) {
-                    proxy.scrollTo(rowID(current), anchor: .center)
-                }
+                scrollToNowIfNeeded(proxy)
+            }
+            .onChange(of: rows) { _, _ in
+                scrollToNowIfNeeded(proxy)
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -134,6 +136,15 @@ struct ChannelEPGDetailView: View {
     }
 
     private func rowID(_ programme: EPGProgramme) -> String { programme.id }
+
+    /// Deferred a tick so the target row (often ~2 days into the list) has been laid out before scrolling.
+    private func scrollToNowIfNeeded(_ proxy: ScrollViewProxy) {
+        guard !hasScrolledToNow, let current = programmes.first(where: { $0.isCurrent(at: Date()) }) else { return }
+        hasScrolledToNow = true
+        DispatchQueue.main.async {
+            proxy.scrollTo(rowID(current), anchor: .center)
+        }
+    }
 
     private func dayLabel(_ day: Date) -> String {
         let cal = Calendar.current

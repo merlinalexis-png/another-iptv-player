@@ -13,6 +13,9 @@ struct EPGGuideView: View {
     @State private var positions: [String: ScrollPosition] = [:]
     @State private var reportedOffsets: [String: CGFloat] = [:]
     @State private var bodyOffsetX: CGFloat = 0
+    /// Visible width of the scrolling body, used to size pinned category headers so
+    /// they span the viewport rather than the full 24-hour content width.
+    @State private var viewportWidth: CGFloat = 0
     @State private var lastSyncX: CGFloat = -1
     /// Which scroller the user is actively driving. Only that one may push the other,
     /// so a follower's geometry updates can never feed back and start a ping-pong loop
@@ -48,7 +51,10 @@ struct EPGGuideView: View {
             .toolbar(.hidden, for: .tabBar)
             .toolbar { toolbarContent }
             .searchable(text: $model.searchQuery)
-            .task { await model.load() }
+            .task {
+                guard model.state == .loading else { return }
+                await model.load()
+            }
             .onDisappear {
                 selectionTask?.cancel()
                 targetReleaseTask?.cancel()
@@ -128,12 +134,6 @@ struct EPGGuideView: View {
                 ScrollView(.horizontal) {
                     EPGTimeAxisView(dayStart: model.dayStart, metrics: metrics)
                         .frame(width: metrics.dayWidth, height: metrics.axisHeight)
-                        .overlay(alignment: .topLeading) {
-                            if let nowX = nowLineX {
-                                Rectangle().fill(Color.red).frame(width: 1.5, height: metrics.axisHeight)
-                                    .offset(x: nowX)
-                            }
-                        }
                 }
                 .scrollPosition(hBinding(Self.axisID))
                 .scrollIndicators(.hidden)
@@ -143,6 +143,20 @@ struct EPGGuideView: View {
                 .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }) { _, x in
                     propagate(from: Self.axisID, x: x)
                 }
+                // Draw the axis now-line off the shared `bodyOffsetX` (the same value
+                // that pins the channel column and positions the row now-lines) rather
+                // than inside the axis scroller. The axis and body are two separate
+                // scrollers that can transiently drift while syncing; anchoring both
+                // now-lines to one offset keeps them on the exact same screen column.
+                .overlay(alignment: .leading) {
+                    if let nowX = nowLineX {
+                        Rectangle().fill(Color.red)
+                            .frame(width: 1.5, height: metrics.axisHeight)
+                            .offset(x: nowX - bodyOffsetX)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .clipped()
             }
             .frame(height: metrics.axisHeight)
             .background(.regularMaterial)
@@ -153,37 +167,13 @@ struct EPGGuideView: View {
             // virtualization for playlists with thousands of channels.
             ScrollView([.horizontal, .vertical]) {
                 LazyVStack(spacing: 1) {
-                    ForEach(model.filteredRows) { row in
-                        HStack(spacing: 0) {
-                            EPGChannelColumnCell(row: row, metrics: metrics,
-                                                 onTap: { playChannel(row) },
-                                                 onLongPress: { detailChannel = row })
-                                .frame(width: metrics.channelColumnWidth, height: metrics.rowHeight)
-                                .offset(x: bodyOffsetX)
-                                .zIndex(1)
-
-                            ZStack(alignment: .topLeading) {
-                                EPGChannelRowView(channelKey: row.channelKey,
-                                                  layout: model.layout(for: row.channelKey),
-                                                  metrics: metrics) { programme in
-                                    showProgramme(programme, in: row)
-                                }
-                                .equatable()
-
-                                if let nowX = nowLineX {
-                                    Rectangle().fill(Color.red.opacity(0.85))
-                                        .frame(width: 1.5, height: metrics.rowHeight)
-                                        .offset(x: nowX)
-                                        .allowsHitTesting(false)
-                                }
-                            }
-                            .frame(width: metrics.dayWidth, height: metrics.rowHeight, alignment: .topLeading)
+                    ForEach(model.items) { item in
+                        switch item {
+                        case .header(let header):
+                            headerRow(header)
+                        case .channel(let row):
+                            channelRow(row)
                         }
-                        .frame(
-                            width: metrics.channelColumnWidth + metrics.dayWidth,
-                            height: metrics.rowHeight,
-                            alignment: .leading
-                        )
                     }
                 }
             }
@@ -196,6 +186,9 @@ struct EPGGuideView: View {
                 if bodyOffsetX != x { bodyOffsetX = x }
                 propagate(from: Self.bodyID, x: x)
             }
+            .onScrollGeometryChange(for: CGFloat.self, of: { $0.containerSize.width }) { _, w in
+                if viewportWidth != w { viewportWidth = w }
+            }
         }
         // `grid` only exists after the async model load reaches `.ready`. Position
         // after its first layout pass, then verify once and retry if either binding
@@ -205,10 +198,76 @@ struct EPGGuideView: View {
         }
     }
 
+    @ViewBuilder
+    private func channelRow(_ row: EPGGuideRow) -> some View {
+        HStack(spacing: 0) {
+            EPGChannelColumnCell(row: row, metrics: metrics,
+                                 onTap: { playChannel(row) },
+                                 onLongPress: { detailChannel = row })
+                .frame(width: metrics.channelColumnWidth, height: metrics.rowHeight)
+                .offset(x: bodyOffsetX)
+                .zIndex(1)
+
+            ZStack(alignment: .topLeading) {
+                EPGChannelRowView(channelKey: row.channelKey,
+                                  layout: model.layout(for: row.channelKey),
+                                  metrics: metrics) { programme in
+                    showProgramme(programme, in: row)
+                }
+                .equatable()
+
+                if let nowX = nowLineX {
+                    Rectangle().fill(Color.red.opacity(0.85))
+                        .frame(width: 1.5, height: metrics.rowHeight)
+                        .offset(x: nowX)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(width: metrics.dayWidth, height: metrics.rowHeight, alignment: .topLeading)
+        }
+        .frame(
+            width: metrics.channelColumnWidth + metrics.dayWidth,
+            height: metrics.rowHeight,
+            alignment: .leading
+        )
+    }
+
+    /// A category header pinned to the left edge: it rides `bodyOffsetX` so it stays
+    /// in view while the programme body scrolls horizontally.
+    @ViewBuilder
+    private func headerRow(_ header: EPGGuideSectionHeader) -> some View {
+        EPGCategoryHeader(
+            title: header.title,
+            channelCount: header.channelCount,
+            collapsed: header.collapsed,
+            width: max(viewportWidth, metrics.channelColumnWidth),
+            height: metrics.headerHeight,
+            onToggle: { model.toggleCategory(header.id) }
+        )
+        .offset(x: bodyOffsetX)
+        .zIndex(2)
+        .frame(
+            width: metrics.channelColumnWidth + metrics.dayWidth,
+            height: metrics.headerHeight,
+            alignment: .leading
+        )
+    }
+
     // MARK: - Toolbar
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        if model.hasCategories {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button(L("epg.categories.expand_all")) { model.setAllCollapsed(false) }
+                    Button(L("epg.categories.collapse_all")) { model.setAllCollapsed(true) }
+                } label: {
+                    Image(systemName: "rectangle.expand.vertical")
+                }
+                .accessibilityLabel(L("epg.categories.menu_a11y"))
+            }
+        }
         ToolbarItem(placement: .topBarTrailing) {
             Button {
                 scrollToNow(forceToday: true)

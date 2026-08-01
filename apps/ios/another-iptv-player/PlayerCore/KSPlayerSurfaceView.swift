@@ -87,6 +87,8 @@ struct KSPlayerVideoSurface: View {
       KSSubtitleOverlay(
         text: engine.subtitleText,
         image: engine.subtitleImage,
+        imageOrigin: engine.subtitleImageOrigin,
+        naturalSize: CGSize(width: CGFloat(engine.videoDisplayWidth), height: CGFloat(engine.videoDisplayHeight)),
         appearance: engine.subtitleAppearance
       )
     }
@@ -168,37 +170,53 @@ final class KSPlayerVideoContainerUIView: UIView {
 private struct KSSubtitleOverlay: View {
   let text: NSAttributedString?
   let image: UIImage?
+  /// Native-frame pixel position of `image` (top-left origin), from `SubtitlePart.origin`.
+  let imageOrigin: CGPoint
+  /// Video's native pixel size, used to scale `image`/`imageOrigin` down to the
+  /// overlay's displayed point size instead of stretching the bitmap to fill it.
+  let naturalSize: CGSize
   let appearance: SubtitleAppearanceSettings
 
   var body: some View {
-    Group {
-      if let image {
-        Image(uiImage: image)
-          .resizable()
-          .scaledToFit()
-      } else if let text, !text.string.isEmpty {
-        Text(text.string)
-          .font(styledFont)
-          .italic(appearance.italic)
-          .kerning(appearance.letterSpacing)
-          .lineSpacing(max(appearance.lineHeight - 1, 0) * CGFloat(appearance.fontSize))
-          .multilineTextAlignment(textAlignment)
-          .foregroundStyle(Color(hex6: appearance.textColorHex6))
-          .shadow(
-            color: Color(hex6: appearance.outlineColorHex6),
-            radius: max(appearance.outlineSize, 0.5)
-          )
-          .padding(.horizontal, CGFloat(appearance.padding) + 8)
-          .padding(.vertical, 4)
-          .background(backgroundFill)
+    GeometryReader { proxy in
+      ZStack(alignment: .bottom) {
+        if let image {
+          let scale = naturalSize.width > 0 ? proxy.size.width / naturalSize.width : 1
+          Image(uiImage: image)
+            .resizable()
+            .frame(width: image.size.width * scale, height: image.size.height * scale)
+            .position(
+              x: (imageOrigin.x + image.size.width / 2) * scale,
+              y: (imageOrigin.y + image.size.height / 2) * scale
+            )
+        } else if let text, !text.string.isEmpty {
+          Text(appearance.applyingWordSpacing(to: text.string))
+            .font(styledFont)
+            .italic(appearance.italic)
+            .kerning(appearance.letterSpacing)
+            .lineSpacing(max(appearance.lineHeight - 1, 0) * CGFloat(appearance.renderedFontPointSize))
+            .multilineTextAlignment(textAlignment)
+            .foregroundStyle(Color(hex6: appearance.textColorHex6))
+            .shadow(
+              color: Color(hex6: appearance.outlineColorHex6),
+              radius: max(appearance.outlineSize, 0.5)
+            )
+            .padding(.horizontal, CGFloat(appearance.padding) + 8)
+            .padding(.vertical, 4)
+            .background(backgroundFill)
+            .padding(.bottom, max(CGFloat(appearance.verticalOffset) + 12, 0))
+        }
       }
+      // The ZStack must fill the whole surface, or a text-only cue collapses to its
+      // intrinsic size and GeometryReader parks it top-left. Filling also gives the
+      // bitmap branch's `.position()` the full-surface coordinate space it expects.
+      .frame(width: proxy.size.width, height: proxy.size.height, alignment: .bottom)
     }
-    .padding(.bottom, CGFloat(max(appearance.verticalOffset, 0)) + 12)
     .allowsHitTesting(false)
   }
 
   private var styledFont: Font {
-    Font.custom(appearance.fontWeight.iosPostscriptName, size: CGFloat(appearance.fontSize))
+    Font.custom(appearance.fontWeight.iosPostscriptName, size: CGFloat(appearance.renderedFontPointSize))
   }
 
   private var textAlignment: TextAlignment {

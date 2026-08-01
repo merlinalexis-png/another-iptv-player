@@ -111,6 +111,16 @@ struct VODView: View {
         }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
+                NavigationLink {
+                    AllVODView(playlist: playlist)
+                } label: {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.body.weight(.semibold))
+                }
+                .disabled(contentStore.vodStreams.isEmpty)
+                .accessibilityLabel(L("browse.all_movies"))
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     showingCategoryPicker = true
                 } label: {
@@ -363,6 +373,7 @@ struct RecentlyAddedVODDetailView: View {
 
     var body: some View {
         VODCategoryContent(playlist: playlist, items: displayItems)
+            .equatable()
             .navigationTitle(L("recently_added.title"))
             .navigationBarTitleDisplayMode(.large)
             .toolbar(.hidden, for: .tabBar)
@@ -545,6 +556,7 @@ struct VODCategoryDetailView: View {
 
     var body: some View {
         VODCategoryContent(playlist: playlist, items: displayItems)
+            .equatable()
             .navigationTitle(category.name)
             .navigationBarTitleDisplayMode(.large)
             .toolbar(.hidden, for: .tabBar)
@@ -576,12 +588,42 @@ struct VODCategoryDetailView: View {
     }
 }
 
-struct VODCategoryContent: View {
+struct VODCategoryContent: View, Equatable {
     let playlist: Playlist
     let items: [VODWithCategory]
 
+    /// Cheap signature compare so a parent re-render (e.g. `applyVODMetadata`'s
+    /// @Published storm) doesn't force SwiftUI to re-process a 10k-item view — that
+    /// scaled with catalog size and froze "All Movies" for seconds on return.
+    /// Internal @State/@Query updates still invalidate normally, independent of this.
+    static func == (lhs: VODCategoryContent, rhs: VODCategoryContent) -> Bool {
+        lhs.playlist.id == rhs.playlist.id
+            && lhs.items.count == rhs.items.count
+            && lhs.items.first?.stream.id == rhs.items.first?.stream.id
+            && lhs.items.last?.stream.id == rhs.items.last?.stream.id
+    }
+
     @Environment(\.posterMetrics) private var posterMetrics
     @Query<WatchProgressMapRequest> private var progressMap: [String: Double]
+
+    @AppStorage(VODSortOption.storageKey) private var sortOption: VODSortOption = .defaultOrder
+    /// Screen-local: file types are specific to the currently shown list, so this
+    /// intentionally does not persist across screens.
+    @State private var fileTypeFilter: Set<String> = []
+    /// Sort/filter output, recomputed off the main thread on input changes so large
+    /// lists (e.g. "All Movies") don't re-sort on every body pass (watch-progress ticks).
+    @State private var displayItems: [VODWithCategory] = []
+    /// Prebuilt play queue matching `displayItems`, so body passes don't re-map a
+    /// large array on every render (critical for "All Movies" with 10k+ items).
+    @State private var streamQueue: [DBVODStream] = []
+    /// File types present in the full list, precomputed to keep the menu O(1) to build.
+    @State private var fileTypes: [String] = []
+    /// Number of cells currently rendered. Paginated so a 10k-item catalog doesn't
+    /// build one giant ForEach (froze on first load and when scrolling to the end).
+    @State private var visibleCount = Self.pageSize
+
+    private static let pageSize = 90
+    private static let gridTopID = "vodGridTop"
 
     init(playlist: Playlist, items: [VODWithCategory]) {
         self.playlist = playlist
@@ -593,9 +635,45 @@ struct VODCategoryContent: View {
         [GridItem(.adaptive(minimum: posterMetrics.categoryGridPosterWidth), spacing: posterMetrics.gridSpacing)]
     }
 
+    /// Cheap O(1) change signal for `items`; avoids O(n) array equality in `.task(id:)`
+    /// on every update pass, which froze navigation on huge lists.
+    private var itemsToken: Int {
+        var hasher = Hasher()
+        hasher.combine(items.count)
+        hasher.combine(items.first?.stream.id)
+        hasher.combine(items.last?.stream.id)
+        return hasher.finalize()
+    }
+
+    private var isFilterActive: Bool {
+        sortOption != .defaultOrder || !fileTypeFilter.isEmpty
+    }
+
+    private func recompute() async {
+        let source = items
+        let sort = sortOption
+        let filter = fileTypeFilter
+        let (result, queue, types) = await Task.detached(priority: .userInitiated) { () -> ([VODWithCategory], [DBVODStream], [String]) in
+            let sorted = sort.apply(to: VODFileType.filter(source, selection: filter))
+            // Options come from the full list so toggling one doesn't hide the others.
+            return (sorted, sorted.map(\.stream), VODFileType.available(in: source))
+        }.value
+        guard !Task.isCancelled else { return }
+        displayItems = result
+        streamQueue = queue
+        fileTypes = types
+        visibleCount = min(Self.pageSize, result.count)
+        prefetch(result)
+    }
+
+    private func loadMore() {
+        guard visibleCount < displayItems.count else { return }
+        visibleCount = min(visibleCount + Self.pageSize, displayItems.count)
+    }
+
     var body: some View {
         Group {
-            if items.isEmpty {
+            if displayItems.isEmpty {
                 VStack(spacing: 12) {
                     Spacer()
                     Image(systemName: "film")
@@ -606,38 +684,172 @@ struct VODCategoryContent: View {
                     Spacer()
                 }
             } else {
-                // Bkz. VODCategoryShelfRow: kuyruk body başına bir kez kurulur.
-                let queue = items.map(\.stream)
-                ScrollView {
-                    LazyVGrid(columns: categoryGridColumns, spacing: posterMetrics.gridRowSpacing) {
-                        ForEach(items) { item in
-                            NavigationLink {
-                                MovieDetailView(playlist: playlist, movie: item.stream, queue: queue)
-                            } label: {
-                                VODStreamCard(
-                                    playlistId: playlist.id,
-                                    stream: item.stream,
-                                    posterWidth: posterMetrics.categoryGridPosterWidth,
-                                    posterHeight: posterMetrics.categoryGridPosterHeight,
-                                    imageLoadProfile: .grid,
-                                    watchProgress: progressMap[String(item.stream.streamId)]
-                                )
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVGrid(columns: categoryGridColumns, spacing: posterMetrics.gridRowSpacing) {
+                            ForEach(Array(displayItems.prefix(visibleCount).enumerated()), id: \.element.stream.id) { index, item in
+                                NavigationLink {
+                                    MovieDetailView(playlist: playlist, movie: item.stream, queue: streamQueue)
+                                } label: {
+                                    VODStreamCard(
+                                        playlistId: playlist.id,
+                                        stream: item.stream,
+                                        posterWidth: posterMetrics.categoryGridPosterWidth,
+                                        posterHeight: posterMetrics.categoryGridPosterHeight,
+                                        imageLoadProfile: .grid,
+                                        watchProgress: progressMap[String(item.stream.streamId)]
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                // Load the next page while cells near the end scroll into view.
+                                // Triggered from inside the lazy grid so onAppear is reliable.
+                                .onAppear { if index >= visibleCount - 15 { loadMore() } }
                             }
-                            .buttonStyle(.plain)
+                        }
+                        .padding()
+                        .id(Self.gridTopID)
+
+                        if visibleCount < displayItems.count {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 24)
                         }
                     }
-                    .padding()
-                }
-                .onChange(of: items) { _, newValue in
-                    let urls = newValue.compactMap { $0.stream.streamIcon }.compactMap { URL(string: $0) }
-                    ListImagePrefetch.start(urls: urls, width: posterMetrics.categoryGridPosterWidth, height: posterMetrics.categoryGridPosterHeight, contentMode: .fill, loadProfile: .grid)
-                }
-                .onAppear {
-                    let urls = items.compactMap { $0.stream.streamIcon }.compactMap { URL(string: $0) }
-                    ListImagePrefetch.start(urls: urls, width: posterMetrics.categoryGridPosterWidth, height: posterMetrics.categoryGridPosterHeight, contentMode: .fill, loadProfile: .grid)
+                    .onChange(of: sortOption) { _, _ in
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo(Self.gridTopID, anchor: .top)
+                        }
+                    }
+                    .onChange(of: fileTypeFilter) { _, _ in
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo(Self.gridTopID, anchor: .top)
+                        }
+                    }
                 }
             }
         }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                sortFilterMenu
+            }
+        }
+        .task(id: itemsToken) { await recompute() }
+        .task(id: sortOption) { await recompute() }
+        .task(id: fileTypeFilter) { await recompute() }
+    }
+
+    private var sortFilterMenu: some View {
+        Menu {
+            Picker(L("sort.title"), selection: $sortOption) {
+                ForEach(VODSortOption.allCases) { option in
+                    Label(L(option.titleKey), systemImage: option.systemImage).tag(option)
+                }
+            }
+
+            if fileTypes.count > 1 {
+                Section(L("filter.file_type")) {
+                    ForEach(fileTypes, id: \.self) { ext in
+                        Button {
+                            toggleFileType(ext)
+                        } label: {
+                            if fileTypeFilter.contains(ext) {
+                                Label(ext.uppercased(), systemImage: "checkmark")
+                            } else {
+                                Text(ext.uppercased())
+                            }
+                        }
+                    }
+                    if !fileTypeFilter.isEmpty {
+                        Button(role: .destructive) {
+                            fileTypeFilter.removeAll()
+                        } label: {
+                            Label(L("filter.clear"), systemImage: "xmark.circle")
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: isFilterActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                .font(.body.weight(.semibold))
+        }
+        .accessibilityLabel(L("sort.title"))
+    }
+
+    private func toggleFileType(_ ext: String) {
+        if fileTypeFilter.contains(ext) {
+            fileTypeFilter.remove(ext)
+        } else {
+            fileTypeFilter.insert(ext)
+        }
+    }
+
+    private func prefetch(_ list: [VODWithCategory]) {
+        // Only the head is ever prefetched (start() caps to maxBatch); building URLs
+        // for the whole 10k list first would be wasted O(n) work on the main thread.
+        let urls = list.prefix(ListImagePrefetch.maxBatch)
+            .compactMap { $0.stream.streamIcon }
+            .compactMap { URL(string: $0) }
+        ListImagePrefetch.start(
+            urls: urls,
+            width: posterMetrics.categoryGridPosterWidth,
+            height: posterMetrics.categoryGridPosterHeight,
+            contentMode: .fill,
+            loadProfile: .grid
+        )
+    }
+}
+
+// MARK: - All Movies (flat, sortable/filterable browse)
+
+/// Flat grid of every movie across categories. Reuses `VODCategoryContent`, so it
+/// inherits the sort menu and file-type filter for free.
+struct AllVODView: View {
+    let playlist: Playlist
+
+    @ObservedObject private var contentStore = PlaylistContentStore.shared
+    @ObservedObject private var hiddenStore = HiddenCategoryStore.shared
+    @State private var searchText = ""
+    @State private var debouncedQuery = ""
+    @State private var debounceTask: Task<Void, Never>?
+    @State private var displayItems: [VODWithCategory] = []
+
+    var body: some View {
+        VODCategoryContent(playlist: playlist, items: displayItems)
+            .equatable()
+            .navigationTitle(L("browse.all_movies"))
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar(.hidden, for: .tabBar)
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: L("vod.search_placeholder"))
+            .onChange(of: searchText) { _, new in
+                debounceTask?.cancel()
+                debounceTask = Task {
+                    try? await Task.sleep(nanoseconds: 280_000_000)
+                    guard !Task.isCancelled else { return }
+                    await MainActor.run { debouncedQuery = new }
+                }
+            }
+            .onDisappear { debounceTask?.cancel(); debounceTask = nil }
+            .task(id: debouncedQuery) { await recompute() }
+            .task(id: contentStore.streamsLoaded) { await recompute() }
+            .task(id: hiddenStore.hiddenIds(playlistId: playlist.id, type: "vod")) { await recompute() }
+    }
+
+    private func recompute() async {
+        guard playlist.id == contentStore.activePlaylistId else { displayItems = []; return }
+        let hidden = hiddenStore.hiddenIds(playlistId: playlist.id, type: "vod")
+        let source = contentStore.vodStreams
+        let q = debouncedQuery.trimmingCharacters(in: .whitespaces)
+        // Everything (hidden-filter, search, relevance sort) runs off the main thread —
+        // the catalog can be hundreds of thousands of rows, so even the hidden-filter
+        // is too heavy to run on-main (it froze the "All" screen on open).
+        let result = await Task.detached(priority: .userInitiated) {
+            let base = source.filter { !hidden.contains($0.stream.categoryId ?? "") }
+            if q.isEmpty { return base }
+            let filtered = base.filter { CatalogTextSearch.matches(search: q, text: $0.stream.name) }
+            return CatalogTextSearch.sortVODByRelevance(filtered, search: q)
+        }.value
+        guard !Task.isCancelled else { return }
+        displayItems = result
     }
 }
 

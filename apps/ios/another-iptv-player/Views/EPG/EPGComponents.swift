@@ -136,6 +136,7 @@ struct EPGGuideMetrics: Equatable {
     var rowHeight: CGFloat
     var channelColumnWidth: CGFloat
     var axisHeight: CGFloat
+    var headerHeight: CGFloat
 
     var dayWidth: CGFloat { hourWidth * 24 }
 
@@ -144,6 +145,7 @@ struct EPGGuideMetrics: Equatable {
         rowHeight = 56
         channelColumnWidth = compact ? 104 : 172
         axisHeight = 28
+        headerHeight = 34
     }
 
     /// X offset (points from midnight) for a given instant on the selected day.

@@ -41,11 +41,18 @@ final class CatchupPlaybackController: ObservableObject {
     @Published var isResolving = false
     @Published var errorMessage: String?
 
+    /// Shared across every instance so a stale resolve from a different sheet's
+    /// controller can't overlay-present after a newer catch-up request started.
+    private static var requestGeneration = 0
+
     func play(playlist: Playlist, stream: DBLiveStream, programme: CatchupProgramme,
               overlay: PlayerOverlayController) async {
         guard !isResolving else { return }
         isResolving = true
         defer { isResolving = false }
+
+        Self.requestGeneration += 1
+        let generation = Self.requestGeneration
 
         let timeZone = await PanelTimeZoneResolver.resolve(playlist: playlist)
         let duration = CatchupAvailability.requestDurationMinutes(
@@ -55,6 +62,7 @@ final class CatchupPlaybackController: ObservableObject {
                 playlist: playlist, streamId: stream.streamId,
                 startUTC: programme.startUTC, durationMinutes: duration,
                 panelTimeZone: timeZone, allowedFormats: nil)
+            guard generation == Self.requestGeneration else { return }
             overlay.present(playlistId: playlist.id) {
                 CatchupPlayerShell(playlist: playlist, stream: stream, programme: programme, url: resolved.url)
             }

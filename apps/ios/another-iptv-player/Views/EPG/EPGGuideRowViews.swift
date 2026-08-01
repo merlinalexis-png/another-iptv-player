@@ -86,6 +86,47 @@ struct EPGTimeAxisView: View {
     }
 }
 
+/// Collapsible category header spanning the guide's visible width. Tapping toggles
+/// the category's channels. `width` is the current viewport width so the header
+/// stays pinned to the left edge while the body scrolls horizontally.
+struct EPGCategoryHeader: View {
+    let title: String
+    let channelCount: Int
+    let collapsed: Bool
+    let width: CGFloat
+    let height: CGFloat
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .foregroundColor(.secondary)
+                    .rotationEffect(.degrees(collapsed ? -90 : 0))
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                Text("\(channelCount)")
+                    .font(.caption2.weight(.medium))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Color(.tertiarySystemFill), in: Capsule())
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .frame(width: width, height: height, alignment: .leading)
+            .background(Color(.secondarySystemBackground))
+            .overlay(alignment: .bottom) { Divider() }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(collapsed ? L("epg.categories.collapsed_a11y") : L("epg.categories.expanded_a11y"))
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
 /// Channel column cell (sticky leading, per row). `Equatable` (on row + metrics,
 /// ignoring closures) so the sticky `.offset(x:)` can update during scroll without
 /// rebuilding the cell — critical for large playlists.
@@ -100,23 +141,31 @@ struct EPGChannelColumnCell: View, Equatable {
     }
 
     var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 8) {
-                // `.grid` profile: the request survives cell recycling (the default
-                // `.standard` cancels on disappear, which starves logos as rows and
-                // sticky labels churn during scroll/virtualization).
-                CachedImage(url: row.iconURL, width: 32, height: 32, cornerRadius: 6, iconName: "tv", loadProfile: .grid)
-                Text(row.displayName)
-                    .font(.caption)
-                    .lineLimit(2)
-                    .foregroundColor(.primary)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 8)
-            .frame(width: metrics.channelColumnWidth, height: metrics.rowHeight, alignment: .leading)
-            .background(.regularMaterial)
+        HStack(spacing: 8) {
+            // `.grid` profile: the request survives cell recycling (the default
+            // `.standard` cancels on disappear, which starves logos as rows and
+            // sticky labels churn during scroll/virtualization).
+            CachedImage(url: row.iconURL, width: 32, height: 32, cornerRadius: 6, iconName: "tv", loadProfile: .grid)
+            Text(row.displayName)
+                .font(.caption)
+                .lineLimit(2)
+                .foregroundColor(.primary)
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain)
-        .simultaneousGesture(LongPressGesture().onEnded { _ in onLongPress() })
+        .padding(.horizontal, 8)
+        .frame(width: metrics.channelColumnWidth, height: metrics.rowHeight, alignment: .leading)
+        .background(.regularMaterial)
+        .contentShape(Rectangle())
+        .gesture(
+            LongPressGesture(minimumDuration: 0.5).exclusively(before: TapGesture())
+                .onEnded { result in
+                    switch result {
+                    case .first:
+                        onLongPress()
+                    case .second:
+                        onTap()
+                    }
+                }
+        )
     }
 }

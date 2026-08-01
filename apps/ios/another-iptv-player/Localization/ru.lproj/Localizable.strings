@@ -432,6 +432,7 @@
 "player.a11y.next_episode" = "Следующая серия";
 "player.a11y.previous_item" = "Предыдущий";
 "player.a11y.next_item" = "Следующий";
+"player.a11y.expand_mini_player" = "Развернуть на весь экран";
 "catalog.load_failed.title" = "Не удалось загрузить контент";
 "settings.show_password" = "Показать пароль";
 "settings.hide_password" = "Скрыть пароль";
@@ -465,6 +466,11 @@
 "epg.error.server" = "Ошибка сервера (HTTP %d).";
 "epg.error.too_large" = "Файл телепрограммы слишком большой.";
 "epg.guide.title" = "Телепрограмма";
+"epg.categories.expand_all" = "Развернуть все";
+"epg.categories.collapse_all" = "Свернуть все";
+"epg.categories.menu_a11y" = "Категории";
+"epg.categories.collapsed_a11y" = "Свёрнуто";
+"epg.categories.expanded_a11y" = "Развёрнуто";
 "epg.jump_to_now" = "Сейчас";
 "epg.last_updated" = "Обновлено";
 "epg.never_updated" = "Никогда";
@@ -483,3 +489,22 @@
 "epg.settings.section_title" = "Телепрограмма (EPG)";
 "epg.settings.url_footer" = "URL XMLTV для телепрограммы. Определяется из плейлиста автоматически, если доступно.";
 "epg.settings.url_placeholder" = "URL EPG (XMLTV)";
+
+// MARK: - VOD sort & filter
+"sort.title" = "Сортировка";
+"sort.default" = "По умолчанию";
+"sort.name_asc" = "Название (А–Я)";
+"sort.name_desc" = "Название (Я–А)";
+"sort.rating_desc" = "Рейтинг";
+"sort.recently_added" = "Недавно добавленные";
+"filter.file_type" = "Тип файла";
+"filter.clear" = "Сбросить фильтр";
+
+// MARK: - Browse all & filters
+"browse.all_movies" = "Все фильмы";
+"browse.all_series" = "Все сериалы";
+"browse.all_live" = "Все каналы";
+"filter.genre" = "Жанр";
+"filter.title" = "Фильтр";
+"filter.catchup" = "Есть архив";
+"filter.has_epg" = "Есть EPG";

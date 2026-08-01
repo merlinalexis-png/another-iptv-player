@@ -20,7 +20,7 @@ struct XMLTVProgramme: Equatable, Sendable {
     let episodeNum: String?
 }
 
-struct XMLTVParseDiagnostics: Equatable, Sendable {
+nonisolated struct XMLTVParseDiagnostics: Equatable, Sendable {
     var totalProgrammes = 0
     var matchedProgrammes = 0
     var skippedOutOfWindow = 0

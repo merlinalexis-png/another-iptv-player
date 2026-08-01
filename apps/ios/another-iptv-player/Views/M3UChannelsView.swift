@@ -509,7 +509,7 @@ struct M3UGroupDetailView: View {
         }
         .onDisappear { debounceTask?.cancel(); debounceTask = nil }
         .task(id: debouncedQuery) { await recomputeItems() }
-        .task(id: store.channels.count) { await recomputeItems() }
+        .onChange(of: store.channels) { _, _ in Task { await recomputeItems() } }
     }
 
     private func recomputeItems() async {
@@ -850,10 +850,10 @@ enum M3UStreamClassifier {
     }
 
     /// VOD göstergeleri: dosya uzantıları ve Xtream tarzı yollar.
-    private static let vodExtensions: Set<String> = ["mp4", "mkv", "avi", "mov", "webm", "flv", "m4v", "wmv", "3gp"]
-    private static let vodPathHints: [String] = ["/movie/", "/movies/", "/series/", "/vod/", "/films/", "/film/"]
+    nonisolated private static let vodExtensions: Set<String> = ["mp4", "mkv", "avi", "mov", "webm", "flv", "m4v", "wmv", "3gp"]
+    nonisolated private static let vodPathHints: [String] = ["/movie/", "/movies/", "/series/", "/vod/", "/films/", "/film/"]
 
-    static func classify(url: URL, groupTitle: String?) -> Classification {
+    nonisolated static func classify(url: URL, groupTitle: String?) -> Classification {
         let path = url.path.lowercased()
         let ext = url.pathExtension.lowercased()
 

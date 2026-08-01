@@ -432,6 +432,7 @@
 "player.a11y.next_episode" = "下一集";
 "player.a11y.previous_item" = "上一个";
 "player.a11y.next_item" = "下一个";
+"player.a11y.expand_mini_player" = "展开为全屏";
 "catalog.load_failed.title" = "内容加载失败";
 "settings.show_password" = "显示密码";
 "settings.hide_password" = "隐藏密码";
@@ -465,6 +466,11 @@
 "epg.error.server" = "服务器错误（HTTP %d）。";
 "epg.error.too_large" = "节目指南文件过大。";
 "epg.guide.title" = "电视指南";
+"epg.categories.expand_all" = "全部展开";
+"epg.categories.collapse_all" = "全部折叠";
+"epg.categories.menu_a11y" = "分类";
+"epg.categories.collapsed_a11y" = "已折叠";
+"epg.categories.expanded_a11y" = "已展开";
 "epg.jump_to_now" = "现在";
 "epg.last_updated" = "上次更新";
 "epg.never_updated" = "从未";
@@ -483,3 +489,22 @@
 "epg.settings.section_title" = "电视指南 (EPG)";
 "epg.settings.url_footer" = "用于节目指南的 XMLTV 网址。可用时将从播放列表自动检测。";
 "epg.settings.url_placeholder" = "EPG (XMLTV) 网址";
+
+// MARK: - VOD sort & filter
+"sort.title" = "排序";
+"sort.default" = "默认";
+"sort.name_asc" = "名称 (A–Z)";
+"sort.name_desc" = "名称 (Z–A)";
+"sort.rating_desc" = "评分";
+"sort.recently_added" = "最近添加";
+"filter.file_type" = "文件类型";
+"filter.clear" = "清除筛选";
+
+// MARK: - Browse all & filters
+"browse.all_movies" = "全部电影";
+"browse.all_series" = "全部剧集";
+"browse.all_live" = "全部频道";
+"filter.genre" = "类型";
+"filter.title" = "筛选";
+"filter.catchup" = "支持回看";
+"filter.has_epg" = "含EPG";

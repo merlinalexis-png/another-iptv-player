@@ -7,7 +7,7 @@ import Foundation
 /// va_list'ten çöp pointer okuyup `EXC_BAD_ACCESS` ile crash eder.
 ///
 /// `Log.info/error` her zaman mesajı `"%@"` ile geçirir → format string injection imkânsız.
-enum Log {
+nonisolated enum Log {
   static func info(_ tag: String, _ message: @autoclosure () -> String) {
     NSLog("%@", "[\(tag)] \(message())")
   }

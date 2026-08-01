@@ -9,7 +9,7 @@ final class LocalizationManager: ObservableObject {
     static let shared = LocalizationManager()
 
     /// Desteklenen diller — Flutter projesindeki l10n ARB dosyalarıyla aynı.
-    static let supportedLanguages: [AppLanguage] = [
+    nonisolated static let supportedLanguages: [AppLanguage] = [
         .init(code: "system", nativeName: "Sistem Dili", englishName: "System"),
         .init(code: "en", nativeName: "English", englishName: "English"),
         .init(code: "tr", nativeName: "Türkçe", englishName: "Turkish"),
@@ -124,7 +124,7 @@ struct AppLanguage: Identifiable, Equatable {
 /// Global helper — tüm view'larda kullanılır: `L("settings.title")` gibi.
 /// Dil değiştiğinde LocalizationManager @Published yayar, view re-render olur, L() yeni değeri çeker.
 /// `nonisolated` — LocalizedError gibi actor-bağımsız contextlerden de çağrılabilir.
-func L(_ key: String) -> String {
+nonisolated func L(_ key: String) -> String {
     LocalizationManager.resolveLocalizedString(for: key)
 }
 
@@ -132,7 +132,7 @@ func L(_ key: String) -> String {
 /// `String.localizedStringWithFormat` kullanılır ki Localizable.stringsdict'teki çoğul
 /// kuralları (one/few/many/other) uygulanabilsin — düz `String(format:)` bunları yok
 /// sayar ve "1 Days" gibi hatalı metin üretir.
-func L(_ key: String, _ args: CVarArg...) -> String {
+nonisolated func L(_ key: String, _ args: CVarArg...) -> String {
     let format = LocalizationManager.resolveLocalizedString(for: key)
     return withVaList(args) { NSString(format: format, locale: nil, arguments: $0) as String }
 }

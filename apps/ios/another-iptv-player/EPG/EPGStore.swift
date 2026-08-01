@@ -39,7 +39,11 @@ nonisolated struct EPGGuideProgrammeRecord: FetchableRecord, Decodable, Sendable
 /// dimension and is rebuilt whenever the active playlist changes.
 @MainActor
 final class EPGStore: ObservableObject {
-    static let shared = EPGStore()
+    static let shared: EPGStore = {
+        let store = EPGStore()
+        store.registerLifecycleObservers()
+        return store
+    }()
 
     /// Now/next for the active playlist. `nil` = EPG not configured/loaded.
     @Published private(set) var snapshot: EPGSnapshot?
@@ -57,13 +61,18 @@ final class EPGStore: ObservableObject {
     private var activeRefreshTasks: [UUID: Task<Void, Never>] = [:]
     private var observers: [NSObjectProtocol] = []
 
-    private init() {
+    private init() {}
+
+    /// Called by the `shared` factory right after `init` returns. The notification
+    /// closures capture `self`, which inside `init` is still a mutable variable —
+    /// a Swift 6 concurrency error for `@Sendable` closures.
+    private func registerLifecycleObservers() {
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.stopTimer() }
+            Task { @MainActor [weak self] in self?.stopTimer() }
         })
         observers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.startTimerIfActive() }
+            Task { @MainActor [weak self] in self?.startTimerIfActive() }
         })
     }
 

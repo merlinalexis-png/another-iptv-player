@@ -340,7 +340,8 @@ final class PlaylistContentStore: ObservableObject {
         let byCategory: [String: [SeriesWithCategory]]
     }
 
-    private static func fetchCategories(playlistId: UUID, type: String, db: Database) throws -> [DBCategory] {
+    // Runs inside GRDB read closures (async let) off the main actor.
+    nonisolated private static func fetchCategories(playlistId: UUID, type: String, db: Database) throws -> [DBCategory] {
         try DBCategory
             .filter(Column("playlistId") == playlistId && Column("type") == type)
             .order(Column("sortIndex"))
@@ -362,7 +363,7 @@ final class PlaylistContentStore: ObservableObject {
     // Xtream panelleri category_id'si null/'0'/kategori listesinde olmayan streamler
     // döndürebilir. INNER JOIN bunları tüm ekranlardan sessizce düşürüyordu; LEFT JOIN +
     // COALESCE ile korunur ve "Kategorisiz" başlığı altında gösterilirler.
-    private static func fetchLiveStreamsData(playlistId: UUID, db: Database) throws -> LiveStreamsData {
+    nonisolated private static func fetchLiveStreamsData(playlistId: UUID, db: Database) throws -> LiveStreamsData {
         let sql = """
         SELECT liveStream.*, COALESCE(category.name, ?) AS categoryName
         FROM liveStream
@@ -376,7 +377,7 @@ final class PlaylistContentStore: ObservableObject {
         return LiveStreamsData(streams: streams, byCategory: Dictionary(grouping: streams) { $0.stream.categoryId ?? "" })
     }
 
-    private static func fetchVODStreamsData(playlistId: UUID, db: Database) throws -> VODStreamsData {
+    nonisolated private static func fetchVODStreamsData(playlistId: UUID, db: Database) throws -> VODStreamsData {
         let sql = """
         SELECT vodStream.*, COALESCE(category.name, ?) AS categoryName
         FROM vodStream
@@ -390,7 +391,7 @@ final class PlaylistContentStore: ObservableObject {
         return VODStreamsData(streams: streams, byCategory: Dictionary(grouping: streams) { $0.stream.categoryId ?? "" })
     }
 
-    private static func fetchSeriesData(playlistId: UUID, db: Database) throws -> SeriesData {
+    nonisolated private static func fetchSeriesData(playlistId: UUID, db: Database) throws -> SeriesData {
         let sql = """
         SELECT series.*, COALESCE(category.name, ?) AS categoryName
         FROM series

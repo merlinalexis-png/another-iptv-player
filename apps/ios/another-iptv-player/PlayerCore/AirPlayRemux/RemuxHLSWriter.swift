@@ -77,6 +77,25 @@ final class RemuxHLSWriter {
   /// Test için biçimi zorlamaya izin verir; nil = codec'e göre otomatik.
   let forcedFormat: SegmentFormat?
 
+  /// External subtitle to expose to the AirPlay target as an HLS WebVTT rendition.
+  /// nil = cast video-only (unchanged behaviour). Phase 1: TS/VOD only.
+  private let subtitleFileURL: URL?
+  private let subtitleName: String?
+  private let subtitleLanguage: String?
+  private var subtitleAssetsWritten = false
+  private let clientPlaylistLock = NSLock()
+  private var clientPlaylistFileNameStorage = "stream.m3u8"
+  /// Filename the cast AVPlayer should load: the subtitle master once a rendition has
+  /// been written, else the raw video playlist. Written on the remux thread, read by the
+  /// session after playlist readiness (well after the first segment), hence the lock.
+  var clientPlaylistFileName: String {
+    clientPlaylistLock.lock(); defer { clientPlaylistLock.unlock() }
+    return clientPlaylistFileNameStorage
+  }
+  private func setClientPlaylistFileName(_ name: String) {
+    clientPlaylistLock.lock(); clientPlaylistFileNameStorage = name; clientPlaylistLock.unlock()
+  }
+
   private let queue = DispatchQueue(label: "AirPlayRemux.writer", qos: .userInitiated)
   /// Interrupt callback okur; blocking av_read_frame'i iptalde kırar.
   private let cancelled = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
@@ -141,7 +160,10 @@ final class RemuxHLSWriter {
     userAgent: String?,
     openDelaySeconds: Double = 0,
     readyToOpen: (() -> Bool)? = nil,
-    forcedFormat: SegmentFormat? = nil
+    forcedFormat: SegmentFormat? = nil,
+    subtitleFileURL: URL? = nil,
+    subtitleName: String? = nil,
+    subtitleLanguage: String? = nil
   ) {
     self.sourceURL = sourceURL
     self.outputDirectory = outputDirectory
@@ -151,6 +173,9 @@ final class RemuxHLSWriter {
     self.openDelaySeconds = openDelaySeconds
     self.readyToOpen = readyToOpen
     self.forcedFormat = forcedFormat
+    self.subtitleFileURL = subtitleFileURL
+    self.subtitleName = subtitleName
+    self.subtitleLanguage = subtitleLanguage
     effectiveStartSeconds = startSeconds
     targetSegmentSeconds = isLive ? 1.5 : 4
     cancelled.pointee = 0
@@ -472,6 +497,52 @@ final class RemuxHLSWriter {
       }
     }
     writePlaylist(final: final)
+    writeSubtitleAssetsIfNeeded()
+  }
+
+  /// Once the first segment exists (so the container format is known), write the WebVTT
+  /// subtitle rendition + a master playlist that references the (unchanged) video playlist
+  /// and the subtitle group, then point the cast player at that master. Runs at most once.
+  /// Phase 1 scope: external SRT over the H.264/MPEG-TS VOD path only — HEVC/fMP4 and live
+  /// are skipped (cast stays video-only) rather than shipping mis-synced subtitles.
+  private func writeSubtitleAssetsIfNeeded() {
+    guard !subtitleAssetsWritten,
+          let subtitleFileURL,
+          let firstSegment = segments.first
+    else { return }
+    subtitleAssetsWritten = true  // attempt once, regardless of outcome
+    guard firstSegment.fileName.hasSuffix(".ts"), !isLive else { return }
+    guard let built = AirPlaySubtitleRendition.build(fromSRTFile: subtitleFileURL) else {
+      Log.error("AirPlayRemux", "subtitle file unreadable/empty; casting video-only")
+      return
+    }
+    let vttName = "subs.vtt"
+    let subsPlaylistName = "subs.m3u8"
+    let masterName = "master.m3u8"
+    let duration = max(built.durationSeconds, sourceDurationSeconds, 1)
+    do {
+      try built.webVTT.write(
+        to: outputDirectory.appendingPathComponent(vttName), atomically: true, encoding: .utf8
+      )
+      try AirPlaySubtitleRendition
+        .subtitleMediaPlaylist(vttFileName: vttName, durationSeconds: duration)
+        .write(
+          to: outputDirectory.appendingPathComponent(subsPlaylistName),
+          atomically: true, encoding: .utf8
+        )
+      try AirPlaySubtitleRendition.masterPlaylist(
+        videoPlaylistFileName: "stream.m3u8",
+        subtitlePlaylistFileName: subsPlaylistName,
+        name: subtitleName ?? "Subtitles",
+        languageCode: subtitleLanguage
+      ).write(
+        to: outputDirectory.appendingPathComponent(masterName), atomically: true, encoding: .utf8
+      )
+      setClientPlaylistFileName(masterName)
+      Log.info("AirPlayRemux", "subtitle rendition written (~\(Int(built.durationSeconds))s of cues)")
+    } catch {
+      Log.error("AirPlayRemux", "subtitle rendition write failed: \(error.localizedDescription)")
+    }
   }
 
   /// İlk segment kısa tutulur ki playlist (ve TV'deki ilk kare) erken hazır olsun.

@@ -432,6 +432,7 @@
 "player.a11y.next_episode" = "الحلقة التالية";
 "player.a11y.previous_item" = "السابق";
 "player.a11y.next_item" = "التالي";
+"player.a11y.expand_mini_player" = "التكبير إلى وضع ملء الشاشة";
 "catalog.load_failed.title" = "تعذّر تحميل المحتوى";
 "settings.show_password" = "إظهار كلمة المرور";
 "settings.hide_password" = "إخفاء كلمة المرور";
@@ -465,6 +466,11 @@
 "epg.error.server" = "خطأ في الخادم (HTTP %d).";
 "epg.error.too_large" = "ملف الدليل كبير جدًا.";
 "epg.guide.title" = "دليل التلفزيون";
+"epg.categories.expand_all" = "توسيع الكل";
+"epg.categories.collapse_all" = "طي الكل";
+"epg.categories.menu_a11y" = "الفئات";
+"epg.categories.collapsed_a11y" = "مطوي";
+"epg.categories.expanded_a11y" = "موسّع";
 "epg.jump_to_now" = "الآن";
 "epg.last_updated" = "آخر تحديث";
 "epg.never_updated" = "أبدًا";
@@ -483,3 +489,22 @@
 "epg.settings.section_title" = "دليل التلفزيون (EPG)";
 "epg.settings.url_footer" = "رابط XMLTV المستخدم لدليل البرامج. يُكتشف من قائمة التشغيل تلقائيًا عند توفره.";
 "epg.settings.url_placeholder" = "رابط EPG (XMLTV)";
+
+// MARK: - VOD sort & filter
+"sort.title" = "فرز";
+"sort.default" = "افتراضي";
+"sort.name_asc" = "الاسم (أ–ي)";
+"sort.name_desc" = "الاسم (ي–أ)";
+"sort.rating_desc" = "التقييم";
+"sort.recently_added" = "المضافة حديثاً";
+"filter.file_type" = "نوع الملف";
+"filter.clear" = "مسح الفلتر";
+
+// MARK: - Browse all & filters
+"browse.all_movies" = "كل الأفلام";
+"browse.all_series" = "كل المسلسلات";
+"browse.all_live" = "كل القنوات";
+"filter.genre" = "النوع";
+"filter.title" = "تصفية";
+"filter.catchup" = "الإعادة متاحة";
+"filter.has_epg" = "يحتوي EPG";

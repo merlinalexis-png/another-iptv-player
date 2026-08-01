@@ -93,12 +93,21 @@ struct EPGProgrammeDetailSheet: View {
                 Button {
                     let programmeBridge = CatchupProgramme(title: programme.title, description: programme.desc,
                                                            startUTC: programme.start, stopUTC: programme.stop)
-                    dismiss()
-                    Task { await catchup.play(playlist: playlist, stream: stream, programme: programmeBridge, overlay: playerOverlay) }
+                    Task {
+                        await catchup.play(playlist: playlist, stream: stream, programme: programmeBridge, overlay: playerOverlay)
+                        // Only close once playback actually resolved; keep the sheet open to show the error otherwise.
+                        if catchup.errorMessage == nil {
+                            dismiss()
+                        }
+                    }
                 } label: {
-                    Label(isCurrent ? L("epg.detail.watch_from_start") : L("epg.detail.play_catchup"),
-                          systemImage: "clock.arrow.circlepath")
-                        .frame(maxWidth: .infinity)
+                    if catchup.isResolving {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else {
+                        Label(isCurrent ? L("epg.detail.watch_from_start") : L("epg.detail.play_catchup"),
+                              systemImage: "clock.arrow.circlepath")
+                            .frame(maxWidth: .infinity)
+                    }
                 }
                 .buttonStyle(.bordered)
                 .disabled(catchup.isResolving)

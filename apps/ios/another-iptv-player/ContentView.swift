@@ -50,6 +50,7 @@ struct ContentView: View {
                             }
                             // Seçiciye dönünce dev katalog kopyalarını bırak.
                             M3UContentStore.shared.unload()
+                            EPGStore.shared.setActivePlaylist(nil)
                         }
                     } else {
                         DashboardView(playlist: playlist) {
@@ -58,6 +59,7 @@ struct ContentView: View {
                                 selectedPlaylist = nil
                             }
                             PlaylistContentStore.shared.unload()
+                            EPGStore.shared.setActivePlaylist(nil)
                         }
                     }
                 }

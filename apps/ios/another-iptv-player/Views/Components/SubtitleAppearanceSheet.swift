@@ -324,20 +324,13 @@ private struct SubtitlePreviewCard: View {
     }
 
     private var displayText: String {
-        guard settings.wordSpacing > 0.01 else { return sampleText }
-        let extraSpaces = Int((settings.wordSpacing).rounded())
-        guard extraSpaces > 0 else { return sampleText }
-        let sep = String(repeating: " ", count: extraSpaces + 1)
-        return sampleText
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { line in
-                line.split(separator: " ").joined(separator: sep)
-            }
-            .joined(separator: "\n")
+        // Same transform the player overlay uses, so the preview matches playback.
+        settings.applyingWordSpacing(to: sampleText)
     }
 
     private var previewFont: Font {
-        let size = CGFloat(settings.fontSize) * 0.5
+        // Same on-screen scale as the player overlay, so the preview is WYSIWYG.
+        let size = CGFloat(settings.renderedFontPointSize)
         return Font.system(size: size, weight: previewWeight)
     }
 
@@ -352,7 +345,7 @@ private struct SubtitlePreviewCard: View {
     }
 
     private var previewLineSpacing: CGFloat {
-        let base = CGFloat(settings.fontSize) * 0.5
+        let base = CGFloat(settings.renderedFontPointSize)
         return max(0, base * CGFloat(settings.lineHeight - 1.0))
     }
 
@@ -383,8 +376,9 @@ private struct SubtitlePreviewCard: View {
     }
 
     private var previewBottomPadding: CGFloat {
-        let base: CGFloat = 12
-        return max(4, base - CGFloat(settings.verticalOffset) * 0.4)
+        // Same formula as the player overlay (KSPlayerSurfaceView), so slider position 0
+        // is the shared baseline and both directions move identically in preview and playback.
+        max(CGFloat(settings.verticalOffset) + 12, 0)
     }
 }
 

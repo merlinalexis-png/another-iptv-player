@@ -38,52 +38,37 @@ enum VideoPlayerState: Int {
   case error = 7
 }
 
+/// The three aspect presentations the player cycles through. Named fixed ratios
+/// (16:9/4:3/16:10) were removed: they only ever pillar/letter-boxed the source at
+/// its natural ratio inside a forced frame — indistinguishable from Fit for most
+/// content and misleading. Fit / Fill / Center covers the real intents (respect the
+/// source, crop-to-fill the screen, or map 1:1) — same set AVPlayer/Infuse expose.
 enum VideoAspectMode: String, CaseIterable {
-  case ratio16x9
-  case ratio4x3
+  /// Aspect-fit: source shown at its natural ratio, letter/pillar-boxed to fit the screen.
+  case fit
+  /// Zoom-to-fill: source scaled to cover the whole screen at its natural ratio; overflow cropped.
+  case fill
+  /// 1:1 pixel mapping (downscaled only if it doesn't fit).
   case center
-  case bestFit
-  case ratio16x10
-
-  var preferredAspectRatio: CGFloat? {
-    switch self {
-    case .ratio16x9: return 16.0 / 9.0
-    case .ratio4x3: return 4.0 / 3.0
-    case .ratio16x10: return 16.0 / 10.0
-    case .center, .bestFit: return nil
-    }
-  }
 
   var iconName: String {
     switch self {
-    case .ratio16x9: return "rectangle"
-    case .ratio4x3: return "rectangle.portrait"
-    case .center: return "dot.square"
-    case .bestFit: return "aspectratio"
-    case .ratio16x10: return "rectangle.compress.vertical"
+    case .fit: return "rectangle.arrowtriangle.2.inward"
+    case .fill: return "rectangle.arrowtriangle.2.outward"
+    case .center: return "square.dashed"
     }
   }
 
   var title: String {
     switch self {
-    case .ratio16x9: return "16:9"
-    case .ratio4x3: return "4:3"
-    case .center: return "Center"
-    case .bestFit: return "Best Fit"
-    case .ratio16x10: return "16:10"
+    case .fit: return "Fit"
+    case .fill: return "Fill"
+    case .center: return "1:1"
     }
   }
 
   var accessibilityLabel: String {
     "Aspect ratio: \(title)"
-  }
-
-  var viewportContentMode: UIView.ContentMode {
-    // Tüm modlarda .scaleAspectFit: video frame içinde doğal oranında gösterilir.
-    // Fixed ratio modlarda (16:9, 4:3) SwiftUI frame zorlu oran boyutuna getirilir;
-    // UIImageView içeriği pillarbox/letterbox ile doğal oranında sığar — MPV'nin varsayılan
-    // davranışıyla aynı sonuç. .scaleToFill kullanılırsa video yanlış uzatılır.
-    return .scaleAspectFit
   }
 }
 
@@ -220,7 +205,7 @@ final class VideoPlayerController: ObservableObject {
   /// Video şu anda AirPlay hedefinde oynuyor (native external ya da remux cast);
   /// yerel yüzeyde "AirPlay'de oynatılıyor" placeholder'ı gösterilir.
   @Published private(set) var isAirPlayPlaybackActive: Bool = false
-  @Published var aspectMode: VideoAspectMode = .bestFit
+  @Published var aspectMode: VideoAspectMode = .fit
   /// Canlı yayın bayrağı: `setPlaybackPresentation` üzerinden güncellenir. PiP sample buffer
   /// delegesi skip kontrollerini gizlemek için bu değeri okur (mpv duration canlıda 0 dönmeyebilir).
   @Published var isLiveStream: Bool = false
@@ -263,6 +248,9 @@ final class VideoPlayerController: ObservableObject {
   private var seekSourceTimeMs: Int64?
   /// `play` sonrası ilk `isPlaybackEstablished` olayında kayıtlı parça tercihleri uygulanır.
   private var pendingPreferredTrackSelection = false
+  /// Recoverable open failures (timeout / host unreachable) trigger one silent reload
+  /// before the error is surfaced. Reset on every explicit `play(url:)`.
+  private var didAutoRetryCurrentLoad = false
 
   /// Imported external subtitles (`ImportedSubtitleStore`): the content key comes from
   /// PlayerView; once playback is established the stored files are re-added to mpv.
@@ -389,6 +377,31 @@ final class VideoPlayerController: ObservableObject {
       if ready { tryFlushPendingLoad() }
     }
     let castPresenting = castController?.isPresenting ?? false
+    // Auto-retry once on a recoverable open failure (timeout / host unreachable)
+    // before surfacing it — flaky IPTV panels frequently succeed on a second attempt.
+    // A fresh KSPlayerLayer is built by tryFlushPendingLoad, which also reinstalls the
+    // remote commands the previous layer's deinit wiped.
+    if !castPresenting,
+       engine.playbackFailureMessage != nil,
+       engine.playbackFailureIsRecoverable,
+       !didAutoRetryCurrentLoad,
+       let request = currentLoadRequest {
+      didAutoRetryCurrentLoad = true
+      log.info("Auto-retrying playback after recoverable failure")
+      // Resume from the current position, not the original startSeconds — otherwise a
+      // mid-stream retry silently rewinds to wherever the user started this load from.
+      let resumeAt: TimeInterval? = engine.isPlaybackEstablished && engine.position > 0.5
+        ? engine.position
+        : request.startSeconds
+      pendingLoadRequest = PendingLoadRequest(
+        url: request.url,
+        startSeconds: resumeAt,
+        isLiveStream: request.isLiveStream,
+        userAgent: request.userAgent
+      )
+      tryFlushPendingLoad()
+      return
+    }
     let failure = castPresenting ? nil : engine.playbackFailureMessage
     if playbackFailureMessage != failure { playbackFailureMessage = failure }
     let ks = engine
@@ -645,6 +658,7 @@ final class VideoPlayerController: ObservableObject {
     userAgent: String? = nil
   ) {
     guard !isTornDown else { return }
+    didAutoRetryCurrentLoad = false
     currentLoadRequest = PendingLoadRequest(
       url: url,
       startSeconds: startSeconds,
@@ -784,40 +798,32 @@ final class VideoPlayerController: ObservableObject {
     aspectMode = mode
   }
 
-  func cycleAspectMode() {
-    let all = VideoAspectMode.allCases
-    guard let idx = all.firstIndex(of: aspectMode) else {
-      setAspectMode(.bestFit)
-      return
-    }
-    let next = all[(idx + 1) % all.count]
-    setAspectMode(next)
-  }
-
   func updateTracks(applyPreferences: Bool = false, skipSubtitleSelection: Bool = false) {
     engine.reloadTrackList { [weak self] video, audio, subs, vid, aid, sid in
       guard let self else { return }
-      self.videoTracks = video
-      self.audioTracks = audio
-      self.subtitleTracks = subs
-      self.currentVideoTrackId = vid
-      self.currentAudioTrackId = aid
-      self.currentSubtitleTrackId = sid
+      // Guarded like the rest of the class: @Published fires objectWillChange even on
+      // an unchanged assignment, and this runs on every track-menu open / establish.
+      if self.videoTracks != video { self.videoTracks = video }
+      if self.audioTracks != audio { self.audioTracks = audio }
+      if self.subtitleTracks != subs { self.subtitleTracks = subs }
+      if self.currentVideoTrackId != vid { self.currentVideoTrackId = vid }
+      if self.currentAudioTrackId != aid { self.currentAudioTrackId = aid }
+      if self.currentSubtitleTrackId != sid { self.currentSubtitleTrackId = sid }
       guard applyPreferences else { return }
       let prefs = PlaybackTrackPreferences.load()
       if let pick = PlaybackTrackPreferences.pickVideo(from: video, prefs: prefs) {
         self.engine.selectVideoTrack(id: pick)
-        self.currentVideoTrackId = pick
+        if self.currentVideoTrackId != pick { self.currentVideoTrackId = pick }
       }
       if let pick = PlaybackTrackPreferences.pickAudio(from: audio, prefs: prefs) {
         self.engine.selectAudioTrack(id: pick)
-        self.currentAudioTrackId = pick
+        if self.currentAudioTrackId != pick { self.currentAudioTrackId = pick }
       }
       if !skipSubtitleSelection,
          let pick = PlaybackTrackPreferences.pickSubtitle(from: subs, prefs: prefs)
       {
         self.engine.selectSubtitleTrack(id: pick)
-        self.currentSubtitleTrackId = pick
+        if self.currentSubtitleTrackId != pick { self.currentSubtitleTrackId = pick }
       }
     }
   }
@@ -938,6 +944,7 @@ final class VideoPlayerController: ObservableObject {
     } else {
       at = request.startSeconds ?? 0
     }
+    let subtitle = selectedExternalSubtitle()
     let content = CastController.Content(
       url: request.url,
       isLive: request.isLiveStream,
@@ -945,9 +952,24 @@ final class VideoPlayerController: ObservableObject {
       startAt: request.isLiveStream ? 0 : at,
       knownDuration: ks.duration,
       nativelyPlayable: false,
-      startPaused: ks.isPlaybackEstablished && ks.isPaused
+      startPaused: ks.isPlaybackEstablished && ks.isPaused,
+      subtitleFileURL: subtitle?.url,
+      subtitleName: subtitle?.name,
+      subtitleLanguage: subtitle?.language
     )
     cast.startRemuxCast(content: content, completion: completion)
+  }
+
+  /// The currently-selected EXTERNAL subtitle (imported SRT), mapped to its file — used to
+  /// expose it on the AirPlay target as an HLS WebVTT rendition. Returns nil when the
+  /// selection is "off" or an embedded track (Phase 1 covers external SRT only).
+  private func selectedExternalSubtitle() -> (url: URL, name: String, language: String?)? {
+    guard currentSubtitleTrackId >= 0,
+          let opt = subtitleTracks.first(where: { $0.id == currentSubtitleTrackId }),
+          opt.isExternal,
+          let url = importedSubtitleFiles.first(where: { $0.lastPathComponent == opt.title })
+    else { return nil }
+    return (url, url.deletingPathExtension().lastPathComponent, opt.langCode)
   }
 
   func applyAudioDelaySeconds(_ seconds: Double) {

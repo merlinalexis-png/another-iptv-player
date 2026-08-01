@@ -459,6 +459,7 @@
 "player.a11y.next_episode" = "Sonraki bölüm";
 "player.a11y.previous_item" = "Önceki";
 "player.a11y.next_item" = "Sonraki";
+"player.a11y.expand_mini_player" = "Tam ekrana genişlet";
 "catalog.load_failed.title" = "İçerik yüklenemedi";
 "settings.show_password" = "Şifreyi göster";
 "settings.hide_password" = "Şifreyi gizle";
@@ -492,6 +493,11 @@
 "epg.error.server" = "Sunucu hatası (HTTP %d).";
 "epg.error.too_large" = "Rehber dosyası çok büyük.";
 "epg.guide.title" = "TV Rehberi";
+"epg.categories.expand_all" = "Tümünü genişlet";
+"epg.categories.collapse_all" = "Tümünü daralt";
+"epg.categories.menu_a11y" = "Kategoriler";
+"epg.categories.collapsed_a11y" = "Daraltıldı";
+"epg.categories.expanded_a11y" = "Genişletildi";
 "epg.jump_to_now" = "Şimdi";
 "epg.last_updated" = "Son güncelleme";
 "epg.never_updated" = "Hiç";
@@ -510,3 +516,22 @@
 "epg.settings.section_title" = "TV Rehberi (EPG)";
 "epg.settings.url_footer" = "Program rehberi için kullanılan XMLTV URL'si. Mümkün olduğunda oynatma listesinden otomatik olarak algılanır.";
 "epg.settings.url_placeholder" = "EPG (XMLTV) URL'si";
+
+// MARK: - VOD sort & filter
+"sort.title" = "Sırala";
+"sort.default" = "Varsayılan";
+"sort.name_asc" = "İsim (A–Z)";
+"sort.name_desc" = "İsim (Z–A)";
+"sort.rating_desc" = "Puan";
+"sort.recently_added" = "Son Eklenenler";
+"filter.file_type" = "Dosya tipi";
+"filter.clear" = "Filtreyi temizle";
+
+// MARK: - Browse all & filters
+"browse.all_movies" = "Tüm Filmler";
+"browse.all_series" = "Tüm Diziler";
+"browse.all_live" = "Tüm Kanallar";
+"filter.genre" = "Tür";
+"filter.title" = "Filtre";
+"filter.catchup" = "Geri sarma var";
+"filter.has_epg" = "EPG var";

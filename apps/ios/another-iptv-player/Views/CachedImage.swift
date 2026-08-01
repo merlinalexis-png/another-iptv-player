@@ -16,7 +16,7 @@ enum IPTVRemoteImagePipeline {
         guard !didInstall else { return }
         didInstall = true
 
-        var urlConf = DataLoader.defaultConfiguration
+        let urlConf = DataLoader.defaultConfiguration
         urlConf.httpMaximumConnectionsPerHost = 4
         urlConf.timeoutIntervalForRequest = 10
         urlConf.timeoutIntervalForResource = 20

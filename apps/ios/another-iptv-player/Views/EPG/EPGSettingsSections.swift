@@ -54,12 +54,12 @@ struct EPGRefreshStatusView: View {
 // MARK: - M3U section (editable XMLTV URL)
 
 struct M3UEPGSettingsSection: View {
-    let playlist: Playlist
+    @State private var playlist: Playlist
     @State private var epgURLDraft: String
     @State private var saveError: String?
 
     init(playlist: Playlist) {
-        self.playlist = playlist
+        _playlist = State(initialValue: playlist)
         _epgURLDraft = State(initialValue: playlist.epgURLOverride ?? playlist.m3uEpgURL ?? "")
     }
 
@@ -98,6 +98,7 @@ struct M3UEPGSettingsSection: View {
         do {
             try await AppDatabase.shared.write { db in try updated.save(db) }
             saveError = nil
+            playlist = updated
             if !trimmed.isEmpty {
                 await EPGStore.shared.forceRefresh(playlist: updated)
             }
@@ -113,6 +114,7 @@ struct XtreamEPGSettingsSection: View {
     let playlist: Playlist
     @State private var epgEnabled: Bool
     @State private var matchedChannels: Int?
+    @ObservedObject private var epgStore = EPGStore.shared
 
     init(playlist: Playlist) {
         self.playlist = playlist
@@ -139,11 +141,18 @@ struct XtreamEPGSettingsSection: View {
         } header: {
             Text(L("epg.settings.section_title"))
         }
-        .task {
-            matchedChannels = try? await AppDatabase.shared.read { db in
-                try DBEPGSource.fetchOne(db, key: playlist.id)?.channelCount
-            } ?? nil
+        .task { await loadMatchedChannels() }
+        .onChange(of: epgStore.refreshState[playlist.id]) { oldValue, newValue in
+            if oldValue?.isRefreshing == true, newValue?.isRefreshing != true {
+                Task { await loadMatchedChannels() }
+            }
         }
+    }
+
+    private func loadMatchedChannels() async {
+        matchedChannels = try? await AppDatabase.shared.read { db in
+            try DBEPGSource.fetchOne(db, key: playlist.id)?.channelCount
+        } ?? nil
     }
 
     private func saveEnabled(_ enabled: Bool) async {

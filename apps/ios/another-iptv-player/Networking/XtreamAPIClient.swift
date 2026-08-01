@@ -21,7 +21,8 @@ enum XtreamError: LocalizedError {
 /// IPTV panel/playlist istekleri için sınırlı zaman aşımlı oturum. `URLSession.shared`
 /// 60 sn idle + 7 GÜN resource zaman aşımıyla geliyor — yanıt vermeyen bir panel,
 /// ekleme/yenileme akışını dakikalarca iptal edilemez şekilde asılı bırakıyordu.
-enum PanelURLSession {
+/// `nonisolated`: URLSession is Sendable; used from background contexts (EPG download).
+nonisolated enum PanelURLSession {
     static let shared: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 20

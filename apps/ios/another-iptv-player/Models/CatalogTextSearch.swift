@@ -1,7 +1,8 @@
 import Foundation
 
 /// GRDB `localized_*` SQL fonksiyonlarıyla aynı mantık (Persistence.swift).
-enum CatalogTextSearch {
+/// Pure stateless namespace — used from detached filtering tasks, so it must not be MainActor.
+nonisolated enum CatalogTextSearch {
     private static let foldLocale = Locale(identifier: "en_US_POSIX")
     private static let alphanumericSet = CharacterSet.alphanumerics
 

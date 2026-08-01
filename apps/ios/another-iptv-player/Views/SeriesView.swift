@@ -112,6 +112,16 @@ struct SeriesView: View {
         }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
+                NavigationLink {
+                    AllSeriesView(playlist: playlist)
+                } label: {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.body.weight(.semibold))
+                }
+                .disabled(contentStore.seriesItems.isEmpty)
+                .accessibilityLabel(L("browse.all_series"))
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     showingCategoryPicker = true
                 } label: {
@@ -339,6 +349,7 @@ struct RecentlyAddedSeriesDetailView: View {
 
     var body: some View {
         SeriesCategoryContent(playlist: playlist, items: displayItems)
+            .equatable()
             .navigationTitle(L("recently_added.title"))
             .navigationBarTitleDisplayMode(.large)
             .toolbar(.hidden, for: .tabBar)
@@ -516,6 +527,7 @@ struct SeriesCategoryDetailView: View {
 
     var body: some View {
         SeriesCategoryContent(playlist: playlist, items: displayItems)
+            .equatable()
             .navigationTitle(category.name)
             .navigationBarTitleDisplayMode(.large)
             .toolbar(.hidden, for: .tabBar)
@@ -547,12 +559,33 @@ struct SeriesCategoryDetailView: View {
     }
 }
 
-struct SeriesCategoryContent: View {
+struct SeriesCategoryContent: View, Equatable {
     let playlist: Playlist
     let items: [SeriesWithCategory]
 
+    /// Cheap signature compare so a parent @Published re-render doesn't force SwiftUI
+    /// to re-process a huge item list. Internal @State/@Query updates still invalidate.
+    static func == (lhs: SeriesCategoryContent, rhs: SeriesCategoryContent) -> Bool {
+        lhs.playlist.id == rhs.playlist.id
+            && lhs.items.count == rhs.items.count
+            && lhs.items.first?.series.seriesId == rhs.items.first?.series.seriesId
+            && lhs.items.last?.series.seriesId == rhs.items.last?.series.seriesId
+    }
+
     @Environment(\.posterMetrics) private var posterMetrics
     @Query<WatchProgressMapRequest> private var progressMap: [String: Double]
+
+    @AppStorage(SeriesSortOption.storageKey) private var sortOption: SeriesSortOption = .defaultOrder
+    /// Screen-local: genres are specific to the currently shown list.
+    @State private var genreFilter: Set<String> = []
+    /// Sort/filter output, recomputed off the main thread on input changes.
+    @State private var displayItems: [SeriesWithCategory] = []
+    /// Genres present in the full list, precomputed to keep the menu O(1) to build.
+    @State private var genres: [String] = []
+    /// Paginated render count so a huge catalog doesn't build one giant ForEach.
+    @State private var visibleCount = Self.pageSize
+
+    private static let pageSize = 90
 
     init(playlist: Playlist, items: [SeriesWithCategory]) {
         self.playlist = playlist
@@ -564,9 +597,41 @@ struct SeriesCategoryContent: View {
         [GridItem(.adaptive(minimum: posterMetrics.categoryGridPosterWidth), spacing: posterMetrics.gridSpacing)]
     }
 
+    /// Cheap O(1) change signal for `items`; avoids O(n) array equality in `.task(id:)`.
+    private var itemsToken: Int {
+        var hasher = Hasher()
+        hasher.combine(items.count)
+        hasher.combine(items.first?.series.seriesId)
+        hasher.combine(items.last?.series.seriesId)
+        return hasher.finalize()
+    }
+
+    private var isFilterActive: Bool {
+        sortOption != .defaultOrder || !genreFilter.isEmpty
+    }
+
+    private func recompute() async {
+        let source = items
+        let sort = sortOption
+        let filter = genreFilter
+        let (result, allGenres) = await Task.detached(priority: .userInitiated) { () -> ([SeriesWithCategory], [String]) in
+            let sorted = sort.apply(to: SeriesGenre.filter(source, selection: filter))
+            return (sorted, SeriesGenre.available(in: source))
+        }.value
+        displayItems = result
+        genres = allGenres
+        visibleCount = min(Self.pageSize, result.count)
+        prefetch(result)
+    }
+
+    private func loadMore() {
+        guard visibleCount < displayItems.count else { return }
+        visibleCount = min(visibleCount + Self.pageSize, displayItems.count)
+    }
+
     var body: some View {
         Group {
-            if items.isEmpty {
+            if displayItems.isEmpty {
                 VStack(spacing: 12) {
                     Spacer()
                     Image(systemName: "play.tv")
@@ -579,7 +644,7 @@ struct SeriesCategoryContent: View {
             } else {
                 ScrollView {
                     LazyVGrid(columns: categoryGridColumns, spacing: posterMetrics.gridRowSpacing) {
-                        ForEach(items) { item in
+                        ForEach(Array(displayItems.prefix(visibleCount).enumerated()), id: \.element.series.seriesId) { index, item in
                             NavigationLink(destination: SeriesDetailView(playlist: playlist, series: item.series)) {
                                 SeriesCard(
                                     playlistId: playlist.id,
@@ -590,20 +655,137 @@ struct SeriesCategoryContent: View {
                                     watchProgress: progressMap[String(item.series.seriesId)]
                                 )
                             }
+                            .onAppear { if index >= visibleCount - 15 { loadMore() } }
                         }
                     }
                     .padding()
-                }
-                .onChange(of: items) { _, newValue in
-                    let urls = newValue.compactMap { $0.series.cover }.compactMap { URL(string: $0) }
-                    ListImagePrefetch.start(urls: urls, width: posterMetrics.categoryGridPosterWidth, height: posterMetrics.categoryGridPosterHeight, contentMode: .fill, loadProfile: .grid)
-                }
-                .onAppear {
-                    let urls = items.compactMap { $0.series.cover }.compactMap { URL(string: $0) }
-                    ListImagePrefetch.start(urls: urls, width: posterMetrics.categoryGridPosterWidth, height: posterMetrics.categoryGridPosterHeight, contentMode: .fill, loadProfile: .grid)
+
+                    if visibleCount < displayItems.count {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 24)
+                    }
                 }
             }
         }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                sortFilterMenu
+            }
+        }
+        .task(id: itemsToken) { await recompute() }
+        .task(id: sortOption) { await recompute() }
+        .task(id: genreFilter) { await recompute() }
+    }
+
+    private var sortFilterMenu: some View {
+        Menu {
+            Picker(L("sort.title"), selection: $sortOption) {
+                ForEach(SeriesSortOption.allCases) { option in
+                    Label(L(option.titleKey), systemImage: option.systemImage).tag(option)
+                }
+            }
+
+            if !genres.isEmpty {
+                Section(L("filter.genre")) {
+                    ForEach(genres, id: \.self) { genre in
+                        Button {
+                            toggleGenre(genre)
+                        } label: {
+                            if genreFilter.contains(genre) {
+                                Label(genre, systemImage: "checkmark")
+                            } else {
+                                Text(genre)
+                            }
+                        }
+                    }
+                    if !genreFilter.isEmpty {
+                        Button(role: .destructive) {
+                            genreFilter.removeAll()
+                        } label: {
+                            Label(L("filter.clear"), systemImage: "xmark.circle")
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: isFilterActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                .font(.body.weight(.semibold))
+        }
+        .accessibilityLabel(L("sort.title"))
+    }
+
+    private func toggleGenre(_ genre: String) {
+        if genreFilter.contains(genre) {
+            genreFilter.remove(genre)
+        } else {
+            genreFilter.insert(genre)
+        }
+    }
+
+    private func prefetch(_ list: [SeriesWithCategory]) {
+        let urls = list.prefix(ListImagePrefetch.maxBatch)
+            .compactMap { $0.series.cover }
+            .compactMap { URL(string: $0) }
+        ListImagePrefetch.start(
+            urls: urls,
+            width: posterMetrics.categoryGridPosterWidth,
+            height: posterMetrics.categoryGridPosterHeight,
+            contentMode: .fill,
+            loadProfile: .grid
+        )
+    }
+}
+
+// MARK: - All Series (flat, sortable/filterable browse)
+
+/// Flat grid of every series across categories. Reuses `SeriesCategoryContent`, so
+/// it inherits the sort menu and genre filter for free.
+struct AllSeriesView: View {
+    let playlist: Playlist
+
+    @ObservedObject private var contentStore = PlaylistContentStore.shared
+    @ObservedObject private var hiddenStore = HiddenCategoryStore.shared
+    @State private var searchText = ""
+    @State private var debouncedQuery = ""
+    @State private var debounceTask: Task<Void, Never>?
+    @State private var displayItems: [SeriesWithCategory] = []
+
+    var body: some View {
+        SeriesCategoryContent(playlist: playlist, items: displayItems)
+            .equatable()
+            .navigationTitle(L("browse.all_series"))
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar(.hidden, for: .tabBar)
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: L("series.search_placeholder"))
+            .onChange(of: searchText) { _, new in
+                debounceTask?.cancel()
+                debounceTask = Task {
+                    try? await Task.sleep(nanoseconds: 280_000_000)
+                    guard !Task.isCancelled else { return }
+                    await MainActor.run { debouncedQuery = new }
+                }
+            }
+            .onDisappear { debounceTask?.cancel(); debounceTask = nil }
+            .task(id: debouncedQuery) { await recompute() }
+            .task(id: contentStore.streamsLoaded) { await recompute() }
+            .task(id: hiddenStore.hiddenIds(playlistId: playlist.id, type: "series")) { await recompute() }
+    }
+
+    private func recompute() async {
+        guard playlist.id == contentStore.activePlaylistId else { displayItems = []; return }
+        let hidden = hiddenStore.hiddenIds(playlistId: playlist.id, type: "series")
+        let source = contentStore.seriesItems
+        let q = debouncedQuery.trimmingCharacters(in: .whitespaces)
+        // All work off the main thread; the catalog can be very large.
+        let result = await Task.detached(priority: .userInitiated) {
+            let base = source.filter { !hidden.contains($0.series.categoryId ?? "") }
+            if q.isEmpty { return base }
+            let filtered = base.filter { CatalogTextSearch.matches(search: q, text: $0.series.name) }
+            return CatalogTextSearch.sortSeriesByRelevance(filtered, search: q)
+        }.value
+        guard !Task.isCancelled else { return }
+        displayItems = result
     }
 }
 

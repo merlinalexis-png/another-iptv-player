@@ -459,6 +459,7 @@
 "player.a11y.next_episode" = "Next episode";
 "player.a11y.previous_item" = "Previous";
 "player.a11y.next_item" = "Next";
+"player.a11y.expand_mini_player" = "Expand to fullscreen";
 "catalog.load_failed.title" = "Content could not be loaded";
 "settings.show_password" = "Show password";
 "settings.hide_password" = "Hide password";
@@ -492,6 +493,11 @@
 "epg.error.server" = "Server error (HTTP %d).";
 "epg.error.too_large" = "The guide file is too large.";
 "epg.guide.title" = "TV Guide";
+"epg.categories.expand_all" = "Expand all";
+"epg.categories.collapse_all" = "Collapse all";
+"epg.categories.menu_a11y" = "Categories";
+"epg.categories.collapsed_a11y" = "Collapsed";
+"epg.categories.expanded_a11y" = "Expanded";
 "epg.jump_to_now" = "Now";
 "epg.last_updated" = "Last updated";
 "epg.never_updated" = "Never";
@@ -510,3 +516,22 @@
 "epg.settings.section_title" = "TV Guide (EPG)";
 "epg.settings.url_footer" = "XMLTV URL used for the programme guide. Detected from the playlist automatically when available.";
 "epg.settings.url_placeholder" = "EPG (XMLTV) URL";
+
+// MARK: - VOD sort & filter
+"sort.title" = "Sort";
+"sort.default" = "Default";
+"sort.name_asc" = "Name (A–Z)";
+"sort.name_desc" = "Name (Z–A)";
+"sort.rating_desc" = "Rating";
+"sort.recently_added" = "Recently Added";
+"filter.file_type" = "File type";
+"filter.clear" = "Clear filter";
+
+// MARK: - Browse all & filters
+"browse.all_movies" = "All Movies";
+"browse.all_series" = "All Series";
+"browse.all_live" = "All Channels";
+"filter.genre" = "Genre";
+"filter.title" = "Filter";
+"filter.catchup" = "Catch-up available";
+"filter.has_epg" = "Has EPG";

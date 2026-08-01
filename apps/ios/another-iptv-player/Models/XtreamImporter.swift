@@ -20,7 +20,7 @@ enum XtreamImporter {
         // Altı endpoint bağımsız — sıralı beklemek toplam süreyi altı gidiş-dönüşün
         // TOPLAMI yapıyordu; paralel çekim yavaş panellerde süreyi yarıdan fazla kısaltır.
         let fetchStart = Date()
-        await progress(L("add_playlist.fetching_categories"))
+        progress(L("add_playlist.fetching_categories"))
         async let liveCatsTask = client.getLiveCategories()
         async let vodCatsTask = client.getVODCategories()
         async let seriesCatsTask = client.getSeriesCategories()
@@ -38,7 +38,7 @@ enum XtreamImporter {
         }
         print("DATABASE: Playlist saved successfully")
 
-        await progress(L("add_playlist.saving_db"))
+        progress(L("add_playlist.saving_db"))
         let insertStart = Date()
 
         // Adult content filter

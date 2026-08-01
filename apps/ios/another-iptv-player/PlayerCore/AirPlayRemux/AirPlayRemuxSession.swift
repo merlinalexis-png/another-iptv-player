@@ -37,7 +37,10 @@ final class AirPlayRemuxSession {
     userAgent: String?,
     minimumBufferSeconds: Double = 12,
     openDelaySeconds: Double = 0,
-    previousToDrain: AirPlayRemuxSession? = nil
+    previousToDrain: AirPlayRemuxSession? = nil,
+    subtitleFileURL: URL? = nil,
+    subtitleName: String? = nil,
+    subtitleLanguage: String? = nil
   ) throws {
     self.sourceURL = sourceURL
     self.startOffsetSeconds = isLive ? 0 : startOffsetSeconds
@@ -61,7 +64,10 @@ final class AirPlayRemuxSession {
       isLive: isLive,
       userAgent: userAgent,
       openDelaySeconds: openDelaySeconds,
-      readyToOpen: readyToOpen
+      readyToOpen: readyToOpen,
+      subtitleFileURL: subtitleFileURL,
+      subtitleName: subtitleName,
+      subtitleLanguage: subtitleLanguage
     )
   }
 
@@ -90,7 +96,7 @@ final class AirPlayRemuxSession {
       return
     }
     let playlistPath = writer.playlistURL.path
-    let localURL = URL(string: "http://\(ip):\(server.port)/\(sessionPathComponent)/stream.m3u8")!
+    let baseURL = "http://\(ip):\(server.port)/\(sessionPathComponent)"
     // Playlist üretimi ve erişilebilirlik doğrulaması PARALEL koşar; ikisi de bitince
     // tamamlanır. Canlıda ilk segment gerçek zamanlı dolduğundan süre payı geniş tutulur.
     // VOD'da tampon birikmesi beklenir (aşağıda) — 4K'da indirme ~gerçek zamanlı olabilir.
@@ -102,6 +108,10 @@ final class AirPlayRemuxSession {
       guard playlistReady, serverVerified, !finished else { return }
       finished = true
       self.previousToDrain = nil  // writer artık açtı; drenaj referansını bırak
+      // If a subtitle rendition was requested, the writer has upgraded the client
+      // playlist to the subtitle master by now (written on the first segment; readiness
+      // needs many more). Otherwise this is still the raw video playlist.
+      let localURL = URL(string: "\(baseURL)/\(self.writer.clientPlaylistFileName)")!
       self.localPlaylistURL = localURL
       completion(.success(localURL))
     }

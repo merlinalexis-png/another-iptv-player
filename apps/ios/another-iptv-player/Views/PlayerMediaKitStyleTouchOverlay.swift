@@ -221,8 +221,13 @@ private final class MediaKitCenterPanel: UIView, UIGestureRecognizerDelegate {
     _ gestureRecognizer: UIGestureRecognizer,
     shouldReceive touch: UITouch
   ) -> Bool {
+    // The 2x speed-hold must work from EVERY point, including over the edge sliders.
+    // The sliders are drag-only (minimumDistance 8), so a stationary hold can never be
+    // mistaken for a slider adjustment — there is nothing to exclude it from.
+    if gestureRecognizer === speedHold { return true }
     // The edge sliders only exist while the chrome is visible; with controls hidden,
-    // every point must remain a valid video gesture target.
+    // every point must remain a valid video gesture target. While visible, a single tap
+    // over a slider capsule is still swallowed so it doesn't fight the slider drag.
     guard controlsVisible else { return true }
     return !PlayerEdgeSliderGestureExclusion.contains(
       touch.location(in: self),
@@ -375,10 +380,10 @@ struct PlayerMediaKitStyleTouchOverlay: UIViewRepresentable {
       }
     }
 
-    private func setShowControlsInstant(_ newValue: Bool) {
-      var t = Transaction(animation: nil)
-      t.disablesAnimations = true
-      withTransaction(t) {
+    private func setShowControlsAnimated(_ newValue: Bool) {
+      // Cross-fade the chrome like the native player. Previously this was a hard cut
+      // (Transaction.disablesAnimations) which made the `.opacity` transition inert.
+      withAnimation(.easeInOut(duration: 0.28)) {
         showControls.wrappedValue = newValue
       }
     }
@@ -388,7 +393,7 @@ struct PlayerMediaKitStyleTouchOverlay: UIViewRepresentable {
         guard let self else { return }
         self.onVideoSurfaceTap?()
         guard !self.showControls.wrappedValue else { return }
-        self.setShowControlsInstant(true)
+        self.setShowControlsAnimated(true)
         self.onResetTimer()
       }
     }
@@ -398,7 +403,7 @@ struct PlayerMediaKitStyleTouchOverlay: UIViewRepresentable {
         guard let self else { return }
         self.onVideoSurfaceTap?()
         guard self.showControls.wrappedValue else { return }
-        self.setShowControlsInstant(false)
+        self.setShowControlsAnimated(false)
         self.onInvalidateTimer()
       }
     }

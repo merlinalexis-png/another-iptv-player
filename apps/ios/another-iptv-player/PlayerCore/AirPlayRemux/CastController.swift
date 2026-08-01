@@ -57,6 +57,11 @@ final class CastController: ObservableObject {
     var nativelyPlayable: Bool
     /// Playback was paused when the engagement began; start the cast paused too.
     var startPaused: Bool = false
+    /// Selected external subtitle (SRT) to expose on the AirPlay target as an HLS WebVTT
+    /// rendition. Only used on the remux path (TS/VOD); nil = cast without subtitles.
+    var subtitleFileURL: URL? = nil
+    var subtitleName: String? = nil
+    var subtitleLanguage: String? = nil
   }
 
   private struct Pending {
@@ -512,7 +517,10 @@ final class CastController: ObservableObject {
         // Fresh start: high buffer gate so playback starts with a cushion.
         minimumBufferSeconds: current == nil ? 12 : 5,
         openDelaySeconds: openDelaySeconds,
-        previousToDrain: previousToDrain
+        previousToDrain: previousToDrain,
+        subtitleFileURL: content.subtitleFileURL,
+        subtitleName: content.subtitleName,
+        subtitleLanguage: content.subtitleLanguage
       )
     } catch {
       // Rare (temp dir creation). Resume the REQUESTED content directly — the
@@ -589,7 +597,12 @@ final class CastController: ObservableObject {
     }
     endBackgroundHold()
     let player = ensureCastPlayer()
-    player.load(url: localURL, startAt: nil, autoPlay: !content.startPaused)
+    player.load(
+      url: localURL, startAt: nil, autoPlay: !content.startPaused,
+      // A WebVTT rendition is only present when the writer added one (external subtitle,
+      // TS/VOD path); turning it on here makes it show on the AirPlay target.
+      preferredLegible: content.subtitleFileURL != nil
+    )
     // The input seek may have failed on a non-seekable source: the writer then
     // remuxes from 0:00 and reports it — presenting the requested offset would
     // show one position while the TV plays another.

@@ -46,7 +46,8 @@ struct M3UService {
         }
     }
 
-    func readLocal(url: URL) throws -> String {
+    // nonisolated: runs inside the detached task in `readLocalAsync`.
+    nonisolated func readLocal(url: URL) throws -> String {
         // Security-scoped resource (fileImporter URL'leri için şart).
         let didStart = url.startAccessingSecurityScopedResource()
         defer { if didStart { url.stopAccessingSecurityScopedResource() } }
@@ -72,7 +73,7 @@ struct M3UService {
 
     // MARK: - Decoding
 
-    private func decode(data: Data) throws -> String {
+    nonisolated private func decode(data: Data) throws -> String {
         // BOM önce: UTF-16 dosyalar isoLatin1'den "başarıyla" ama NUL'larla dolu çözülür
         // ve #EXTM3U hiç eşleşmezdi. isoLatin1 HER bayt dizisi için başarılı olduğundan
         // en sona konmalı (son çare, mojibake riskiyle).

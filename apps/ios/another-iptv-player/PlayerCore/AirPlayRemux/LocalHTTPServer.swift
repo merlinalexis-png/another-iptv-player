@@ -286,6 +286,9 @@ final class LocalHTTPServer {
     if fileName.hasSuffix(".ts") { return "video/mp2t" }
     if fileName.hasSuffix(".m4s") { return "video/iso.segment" }
     if fileName.hasSuffix(".mp4") { return "video/mp4" }
+    // WebVTT subtitle rendition (AirPlay subtitles). AVPlayer rejects a legible
+    // rendition unless it is served as text/vtt.
+    if fileName.hasSuffix(".vtt") { return "text/vtt" }
     return "application/octet-stream"
   }
 

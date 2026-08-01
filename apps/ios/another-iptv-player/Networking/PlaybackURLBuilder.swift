@@ -3,7 +3,9 @@ import Foundation
 struct PlaybackURLBuilder {
     let playlist: Playlist
     
-    private var cleanBaseURL: String {
+    // nonisolated: pure string massaging over the (Sendable) playlist value; needed
+    // by `xmltvURL()`/`queryAuthURL` which run on the EPG refresh background path.
+    nonisolated private var cleanBaseURL: String {
         var baseString = playlist.serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
         
         if !baseString.lowercased().hasPrefix("http://") && !baseString.lowercased().hasPrefix("https://") {
@@ -72,7 +74,7 @@ struct PlaybackURLBuilder {
     /// Full XMLTV guide URL: `{host}/xmltv.php?username=&password=`. Credentials go
     /// as query items (not path segments), so the `'+' → %2B` PHP `$_GET` fix that
     /// `XtreamAPIClient` applies is replicated here.
-    func xmltvURL() -> URL? {
+    nonisolated func xmltvURL() -> URL? {
         queryAuthURL(path: "/xmltv.php", extraQuery: [])
     }
 
@@ -110,7 +112,7 @@ struct PlaybackURLBuilder {
     /// Builds a `{cleanBaseURL}{path}?username=&password=[&extra]` URL, applying the
     /// PHP `$_GET` `'+' → %2B` fix (URLComponents leaves `+` unencoded, but PHP turns
     /// it into a space, silently corrupting credentials).
-    private func queryAuthURL(path: String, extraQuery: [URLQueryItem]) -> URL? {
+    nonisolated private func queryAuthURL(path: String, extraQuery: [URLQueryItem]) -> URL? {
         guard var comps = URLComponents(string: cleanBaseURL + path) else { return nil }
         comps.queryItems = [
             URLQueryItem(name: "username", value: playlist.username.trimmingCharacters(in: .whitespacesAndNewlines)),

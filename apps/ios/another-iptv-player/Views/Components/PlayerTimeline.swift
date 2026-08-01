@@ -16,7 +16,7 @@ struct PlayerTimeline: View {
             let width = geometry.size.width
             let currentDisplayValue = isDragging ? localValue : value
             let barHeight: CGFloat = isDragging ? 6 : 4
-            let thumbSize: CGFloat = isDragging ? 18 : 13
+            let thumbSize: CGFloat = isDragging ? 20 : 13
 
             ZStack(alignment: .leading) {
                 // 1. Arka plan hattı — iOS native ince + açık ton.
@@ -36,7 +36,7 @@ struct PlayerTimeline: View {
                     .shadow(color: .black.opacity(0.35), radius: 4, x: 0, y: 1.5)
                     .offset(x: (width * CGFloat(currentDisplayValue)) - thumbSize / 2)
             }
-            .animation(.easeOut(duration: 0.16), value: isDragging)
+            .animation(.spring(response: 0.32, dampingFraction: 0.72), value: isDragging)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
             .gesture(
@@ -62,6 +62,8 @@ struct PlayerTimeline: View {
             )
         }
         .frame(height: 44) // HIG minimum dokunma hedefi; görsel bar ince kalır.
+        // Light tick when the scrub grab begins/releases, like the native scrubber.
+        .sensoryFeedback(.selection, trigger: isDragging)
     }
 }
 

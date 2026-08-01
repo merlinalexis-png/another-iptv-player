@@ -185,7 +185,7 @@ final class DownloadManager: NSObject, ObservableObject {
         // Bu sayede slot atama tek bir yerde (pumpQueue) olur, yarış durumu olmaz.
         do {
             try await AppDatabase.shared.write { db in
-                var item = DBDownloadedItem(
+                let item = DBDownloadedItem(
                     id: id,
                     playlistId: playlistId,
                     streamId: streamId,
@@ -517,7 +517,7 @@ final class DownloadManager: NSObject, ObservableObject {
         errorMessage: String
     ) async {
         _ = try? await AppDatabase.shared.write { db in
-            var item = DBDownloadedItem(
+            let item = DBDownloadedItem(
                 id: id,
                 playlistId: playlistId,
                 streamId: streamId,
@@ -616,7 +616,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
         }()
         guard sourceSize > 0 else {
             MainActor.assumeIsolated {
-                Task { await self.markFailed(
+                _ = Task { await self.markFailed(
                     id: id,
                     error: NSError(domain: "Download", code: -1,
                                    userInfo: [NSLocalizedDescriptionKey: "Empty download payload"])
@@ -633,13 +633,13 @@ extension DownloadManager: URLSessionDownloadDelegate {
             try fm.moveItem(at: location, to: destination)
         } catch {
             MainActor.assumeIsolated {
-                Task { await self.markFailed(id: id, error: error) }
+                _ = Task { await self.markFailed(id: id, error: error) }
             }
             return
         }
 
         MainActor.assumeIsolated {
-            Task { await self.markCompleted(id: id, fallbackSize: sourceSize) }
+            _ = Task { await self.markCompleted(id: id, fallbackSize: sourceSize) }
         }
     }
 

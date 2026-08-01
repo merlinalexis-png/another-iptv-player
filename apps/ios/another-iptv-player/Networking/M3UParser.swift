@@ -57,7 +57,8 @@ enum M3UParserError: LocalizedError {
 /// - Attr değeri içine sızmış newline'ları birleştirir (`joinEXTINFContinuations`).
 /// - EXTINF ve URL aynı satıra yapışık gelmişse (`...,Namehttp://...`) ayırır.
 /// - URL percent-encoding fallback'i ile oynatılabilirliği arttırır.
-enum M3UParser {
+/// Pure stateless namespace — parse runs in detached tasks, so it must not be MainActor.
+nonisolated enum M3UParser {
 
     // MARK: Tag Prefixes
 

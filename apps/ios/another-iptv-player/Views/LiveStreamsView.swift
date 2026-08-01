@@ -101,6 +101,16 @@ struct LiveStreamsView: View {
                 .accessibilityLabel(L("epg.guide.title"))
             }
             ToolbarItem(placement: .navigationBarTrailing) {
+                NavigationLink {
+                    AllLiveView(playlist: playlist)
+                } label: {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.body.weight(.semibold))
+                }
+                .disabled(contentStore.liveStreams.isEmpty)
+                .accessibilityLabel(L("browse.all_live"))
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     showingCategoryPicker = true
                 } label: {
@@ -460,6 +470,7 @@ struct LiveCategoryDetailView: View {
                 }
             }
         )
+        .equatable()
         .navigationTitle(category.name)
         .navigationBarTitleDisplayMode(.large)
         .toolbar(.hidden, for: .tabBar)
@@ -491,16 +502,67 @@ struct LiveCategoryDetailView: View {
     }
 }
 
-struct LiveCategoryContent: View {
+struct LiveCategoryContent: View, Equatable {
     let playlist: Playlist
     let items: [LiveStreamWithCategory]
     var onStreamSelected: ((DBLiveStream, DBWatchHistory?) -> Void)? = nil
 
+    /// Cheap signature compare (ignores the selection closure) so a parent @Published
+    /// re-render doesn't force SwiftUI to re-process a huge channel list. Internal
+    /// @State updates still invalidate normally.
+    static func == (lhs: LiveCategoryContent, rhs: LiveCategoryContent) -> Bool {
+        lhs.playlist.id == rhs.playlist.id
+            && lhs.items.count == rhs.items.count
+            && lhs.items.first?.stream.streamId == rhs.items.first?.stream.streamId
+            && lhs.items.last?.stream.streamId == rhs.items.last?.stream.streamId
+    }
+
     @Environment(\.posterMetrics) private var posterMetrics
+
+    @AppStorage(LiveSortOption.storageKey) private var sortOption: LiveSortOption = .defaultOrder
+    /// Screen-local toggle filters (catch-up / EPG).
+    @State private var filter: LiveStreamFilter = []
+    /// Sort/filter output, recomputed off the main thread on input changes.
+    @State private var displayItems: [LiveStreamWithCategory] = []
+    /// Paginated render count so a huge catalog doesn't build one giant ForEach.
+    @State private var visibleCount = Self.pageSize
+
+    private static let pageSize = 90
+
+    /// Cheap O(1) change signal for `items`; avoids O(n) array equality in `.task(id:)`
+    /// on every update pass, which froze navigation on huge lists ("All Channels").
+    private var itemsToken: Int {
+        var hasher = Hasher()
+        hasher.combine(items.count)
+        hasher.combine(items.first?.stream.streamId)
+        hasher.combine(items.last?.stream.streamId)
+        return hasher.finalize()
+    }
+
+    private var isFilterActive: Bool {
+        sortOption != .defaultOrder || !filter.isEmpty
+    }
+
+    private func recompute() async {
+        let source = items
+        let sort = sortOption
+        let activeFilter = filter
+        let result = await Task.detached(priority: .userInitiated) {
+            sort.apply(to: LiveStreamFilter.apply(source, activeFilter))
+        }.value
+        displayItems = result
+        visibleCount = min(Self.pageSize, result.count)
+        prefetch(result)
+    }
+
+    private func loadMore() {
+        guard visibleCount < displayItems.count else { return }
+        visibleCount = min(visibleCount + Self.pageSize, displayItems.count)
+    }
 
     var body: some View {
         Group {
-            if items.isEmpty {
+            if displayItems.isEmpty {
                 VStack(spacing: 12) {
                     Spacer()
                     Image(systemName: "magnifyingglass")
@@ -516,7 +578,7 @@ struct LiveCategoryContent: View {
                 ]
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: posterMetrics.gridRowSpacing) {
-                        ForEach(items) { item in
+                        ForEach(Array(displayItems.prefix(visibleCount).enumerated()), id: \.element.stream.streamId) { index, item in
                             LiveStreamCard(
                                 playlistId: playlist.id,
                                 stream: item.stream,
@@ -525,20 +587,147 @@ struct LiveCategoryContent: View {
                                 imageLoadProfile: .grid,
                                 onStreamSelected: onStreamSelected
                             )
+                            .onAppear { if index >= visibleCount - 15 { loadMore() } }
                         }
                     }
                     .padding()
-                }
-                .onChange(of: items) { _, newValue in
-                    let urls = newValue.compactMap { $0.stream.streamIcon }.compactMap { URL(string: $0) }
-                    ListImagePrefetch.start(urls: urls, width: posterMetrics.liveGridIconSize, height: posterMetrics.liveGridIconSize, loadProfile: .grid)
-                }
-                .onAppear {
-                    let urls = items.compactMap { $0.stream.streamIcon }.compactMap { URL(string: $0) }
-                    ListImagePrefetch.start(urls: urls, width: posterMetrics.liveGridIconSize, height: posterMetrics.liveGridIconSize, loadProfile: .grid)
+
+                    if visibleCount < displayItems.count {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 24)
+                    }
                 }
             }
         }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                sortFilterMenu
+            }
+        }
+        .task(id: itemsToken) { await recompute() }
+        .task(id: sortOption) { await recompute() }
+        .task(id: filter.rawValue) { await recompute() }
+    }
+
+    private var sortFilterMenu: some View {
+        Menu {
+            Picker(L("sort.title"), selection: $sortOption) {
+                ForEach(LiveSortOption.allCases) { option in
+                    Label(L(option.titleKey), systemImage: option.systemImage).tag(option)
+                }
+            }
+
+            Section(L("filter.title")) {
+                Button {
+                    filter.formSymmetricDifference(.catchup)
+                } label: {
+                    if filter.contains(.catchup) {
+                        Label(L("filter.catchup"), systemImage: "checkmark")
+                    } else {
+                        Text(L("filter.catchup"))
+                    }
+                }
+                Button {
+                    filter.formSymmetricDifference(.hasEPG)
+                } label: {
+                    if filter.contains(.hasEPG) {
+                        Label(L("filter.has_epg"), systemImage: "checkmark")
+                    } else {
+                        Text(L("filter.has_epg"))
+                    }
+                }
+                if !filter.isEmpty {
+                    Button(role: .destructive) {
+                        filter = []
+                    } label: {
+                        Label(L("filter.clear"), systemImage: "xmark.circle")
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: isFilterActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                .font(.body.weight(.semibold))
+        }
+        .accessibilityLabel(L("sort.title"))
+    }
+
+    private func prefetch(_ list: [LiveStreamWithCategory]) {
+        let urls = list.prefix(ListImagePrefetch.maxBatch)
+            .compactMap { $0.stream.streamIcon }
+            .compactMap { URL(string: $0) }
+        ListImagePrefetch.start(urls: urls, width: posterMetrics.liveGridIconSize, height: posterMetrics.liveGridIconSize, loadProfile: .grid)
+    }
+}
+
+// MARK: - All Live (flat, sortable/filterable browse)
+
+/// Flat grid of every channel across categories. Reuses `LiveCategoryContent`, so
+/// it inherits the sort menu and catch-up/EPG filters for free.
+struct AllLiveView: View {
+    let playlist: Playlist
+
+    @ObservedObject private var contentStore = PlaylistContentStore.shared
+    @ObservedObject private var hiddenStore = HiddenCategoryStore.shared
+    @EnvironmentObject private var playerOverlay: PlayerOverlayController
+    @State private var searchText = ""
+    @State private var debouncedQuery = ""
+    @State private var debounceTask: Task<Void, Never>?
+    @State private var displayItems: [LiveStreamWithCategory] = []
+
+    private var currentStreams: [DBLiveStream] { displayItems.map(\.stream) }
+
+    var body: some View {
+        LiveCategoryContent(
+            playlist: playlist,
+            items: displayItems,
+            onStreamSelected: { stream, history in
+                let all = currentStreams
+                playerOverlay.present(playlistId: playlist.id) {
+                    LivePlayerShell(
+                        playlist: playlist,
+                        queue: all,
+                        sections: [LiveChannelCategorySection(id: "all", title: L("browse.all_live"), streams: all)],
+                        initialStream: stream,
+                        initialHistory: history,
+                        subtitle: L("browse.all_live")
+                    )
+                }
+            }
+        )
+        .equatable()
+        .navigationTitle(L("browse.all_live"))
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar(.hidden, for: .tabBar)
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: L("live.search_placeholder"))
+        .onChange(of: searchText) { _, new in
+            debounceTask?.cancel()
+            debounceTask = Task {
+                try? await Task.sleep(nanoseconds: 280_000_000)
+                guard !Task.isCancelled else { return }
+                await MainActor.run { debouncedQuery = new }
+            }
+        }
+        .onDisappear { debounceTask?.cancel(); debounceTask = nil }
+        .task(id: debouncedQuery) { await recompute() }
+        .task(id: contentStore.streamsLoaded) { await recompute() }
+        .task(id: hiddenStore.hiddenIds(playlistId: playlist.id, type: "live")) { await recompute() }
+    }
+
+    private func recompute() async {
+        guard playlist.id == contentStore.activePlaylistId else { displayItems = []; return }
+        let hidden = hiddenStore.hiddenIds(playlistId: playlist.id, type: "live")
+        let source = contentStore.liveStreams
+        let q = debouncedQuery.trimmingCharacters(in: .whitespaces)
+        // All work off the main thread; the catalog can be very large.
+        let result = await Task.detached(priority: .userInitiated) {
+            let base = source.filter { !hidden.contains($0.stream.categoryId ?? "") }
+            if q.isEmpty { return base }
+            let filtered = base.filter { CatalogTextSearch.matches(search: q, text: $0.stream.name) }
+            return CatalogTextSearch.sortLiveByRelevance(filtered, search: q)
+        }.value
+        guard !Task.isCancelled else { return }
+        displayItems = result
     }
 }
 

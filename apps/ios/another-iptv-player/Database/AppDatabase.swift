@@ -1,7 +1,10 @@
 import Foundation
 import GRDB
 
-struct AppDatabase {
+/// `nonisolated`: GRDB's DatabaseQueue/DatabasePool are Sendable and internally
+/// synchronized, and reads/writes are issued from background contexts (EPG
+/// refresh, UITest fixtures) as well as the main actor.
+nonisolated struct AppDatabase {
     private let dbWriter: any DatabaseWriter
     
     init(_ dbWriter: any DatabaseWriter) throws {
@@ -459,7 +462,7 @@ struct AppDatabase {
 }
 
 // MARK: - Database Access
-extension AppDatabase {
+nonisolated extension AppDatabase {
     var reader: any DatabaseReader { dbWriter }
 
     /// Synchronous write — used by UITest-only fixtures during App.init,
@@ -470,7 +473,7 @@ extension AppDatabase {
     }
 }
 
-extension AppDatabase {
+nonisolated extension AppDatabase {
     func write<T>(_ updates: @escaping (Database) throws -> T) async throws -> T {
         try await dbWriter.write { db in
             try updates(db)

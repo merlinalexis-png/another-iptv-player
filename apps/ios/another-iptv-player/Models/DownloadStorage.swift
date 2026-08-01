@@ -3,7 +3,8 @@ import Foundation
 /// İndirilen medya dosyaları için cihaz üzerinde path yönetir.
 /// Application Support/Downloads altında tutulur — Caches gibi iOS tarafından silinmez,
 /// iCloud backup dışına alınır (medya dosyaları büyük).
-enum DownloadStorage {
+/// Pure FileManager namespace — used from URLSession delegate/background contexts.
+nonisolated enum DownloadStorage {
     /// Downloads kök dizini. Uygulama güncellemelerinde korunur.
     static func rootDirectory() throws -> URL {
         let fm = FileManager.default

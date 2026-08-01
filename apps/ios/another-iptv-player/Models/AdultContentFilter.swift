@@ -1,6 +1,8 @@
 import Foundation
 
-enum AdultContentFilter {
+// Pure stateless namespace (immutable Sendable keyword tables only) — called from
+// GRDB db closures, so it must not be MainActor.
+nonisolated enum AdultContentFilter {
 
     // MARK: - Keywords
 

@@ -123,7 +123,7 @@ private struct SearchResult {
     }
 }
 
-private func search(_ q: String, in text: String) -> Bool {
+nonisolated private func search(_ q: String, in text: String) -> Bool {
     q.split(separator: " ").allSatisfy { text.localizedCaseInsensitiveContains($0) }
 }
 

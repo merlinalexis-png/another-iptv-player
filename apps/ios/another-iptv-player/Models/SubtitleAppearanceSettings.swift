@@ -109,6 +109,31 @@ struct SubtitleAppearanceSettings: Equatable {
         delaySeconds: 0
     )
 
+    /// mpv drew the stored font size window-relative (roughly ×0.5 of the value on a phone);
+    /// SwiftUI's `Font.custom(size:)` treats it as raw points, so after the KSPlayer migration
+    /// the same value rendered ~2× too big — and even the minimum stayed large. This scale
+    /// converts the stored size to the on-screen point size, restoring the mpv proportions.
+    /// The settings preview and the player overlay both go through `renderedFontPointSize`,
+    /// so what you see in the sheet is what the player draws.
+    static let renderPointScale: Double = 0.5
+
+    /// The font size actually drawn on screen, in points.
+    var renderedFontPointSize: Double { Double(fontSize) * Self.renderPointScale }
+
+    /// Applies the "word spacing" setting by widening the gaps between words. SwiftUI `Text`
+    /// has no word-spacing modifier, so extra spaces are inserted between words. Both the
+    /// settings preview and the player overlay call this, so what you preview is what plays.
+    func applyingWordSpacing(to text: String) -> String {
+        guard wordSpacing > 0.01 else { return text }
+        let extra = Int(wordSpacing.rounded())
+        guard extra > 0 else { return text }
+        let separator = String(repeating: " ", count: extra + 1)
+        return text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.split(separator: " ").joined(separator: separator) }
+            .joined(separator: "\n")
+    }
+
     static let fontSizeRange: ClosedRange<Int> = 24...96
     static let lineHeightRange: ClosedRange<Double> = 1.0...2.5
     static let letterSpacingRange: ClosedRange<Double> = -2...5

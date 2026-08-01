@@ -19,6 +19,10 @@ final class KSPlayerEngine: NSObject, ObservableObject {
   @Published private(set) var isCompleted = false
   @Published private(set) var isPlaybackEstablished = false
   @Published private(set) var playbackFailureMessage: String?
+  /// True when the last failure was a transient open failure (timeout / host
+  /// unreachable) worth one silent retry, false for terminal ones. Read by
+  /// `VideoPlayerController` to decide auto-retry.
+  @Published private(set) var playbackFailureIsRecoverable = false
   @Published private(set) var position: TimeInterval = 0
   @Published private(set) var duration: TimeInterval = 0
   @Published private(set) var playbackRate: Double = 1
@@ -51,6 +55,9 @@ final class KSPlayerEngine: NSObject, ObservableObject {
   /// Current subtitle cue for the overlay (nil = hide).
   @Published private(set) var subtitleText: NSAttributedString?
   @Published private(set) var subtitleImage: UIImage?
+  /// Native-frame pixel position of `subtitleImage` (PGS/DVB bitmap cues), from
+  /// `SubtitlePart.origin`; `.zero` when the image spans multiple merged regions.
+  @Published private(set) var subtitleImageOrigin: CGPoint = .zero
   @Published private(set) var subtitleAppearance = SubtitleAppearancePersistence.load()
   @Published private(set) var isPiPActive = false
 
@@ -72,6 +79,11 @@ final class KSPlayerEngine: NSObject, ObservableObject {
   private var loadTimeoutWorkItem: DispatchWorkItem?
   private var lastPositionPublish: TimeInterval = 0
   private var isDisposed = false
+  /// Cached quarter-rotation of the current AVPlayer video track. Synchronous
+  /// `preferredTransform` access is deprecated (iOS 16); the transform is loaded
+  /// asynchronously once per track and consumed by `refreshDiagnostics`.
+  private weak var quarterRotationQueriedTrack: AVAssetTrack?
+  private var avTrackIsQuarterRotated = false
 
   // MARK: - Load
 
@@ -131,6 +143,7 @@ final class KSPlayerEngine: NSObject, ObservableObject {
   private func resetForNewLoad() {
     cancelLoadTimeoutWatchdog()
     playbackFailureMessage = nil
+    playbackFailureIsRecoverable = false
     isPlaybackEstablished = false
     isCompleted = false
     isBuffering = true
@@ -141,6 +154,7 @@ final class KSPlayerEngine: NSObject, ObservableObject {
     bufferTimelineEnd = 0
     subtitleText = nil
     subtitleImage = nil
+    subtitleImageOrigin = .zero
     subtitleInfosById = [:]
     removedSubtitleIDs = []
     externalSubtitleIDs = []
@@ -173,19 +187,44 @@ final class KSPlayerEngine: NSObject, ObservableObject {
     let options = KSOptions()
     if let userAgent, !userAgent.isEmpty {
       options.userAgent = userAgent
+      // `KSOptions.userAgent` only sets the FFmpeg header (`formatContextOptions`). The
+      // native path builds `AVURLAsset(url:options: options.avOptions)`, so without this
+      // AVPlayer sends the default `AppleCoreMedia` UA. Panels that gate on User-Agent
+      // reject that → AVPlayer fails → falls back to FFmpeg, losing native playback AND
+      // native AirPlay. Mirror the UA onto the asset HTTP headers so UA-compatible content
+      // stays on AVPlayer. (Set avOptions directly rather than `appendHeader`, which would
+      // also duplicate the UA into the FFmpeg `headers` option.)
+      var assetHeaders =
+        options.avOptions["AVURLAssetHTTPHeaderFieldsKey"] as? [String: String] ?? [:]
+      assetHeaders["User-Agent"] = userAgent
+      options.avOptions["AVURLAssetHTTPHeaderFieldsKey"] = assetHeaders
     }
     if let startSeconds, startSeconds > 0 {
       options.startPlayTime = startSeconds
     }
-    // isSecondOpen: yarım buffer dolunca oynatmaya başla — açılış süresini kısaltır.
+    // isSecondOpen: ilk kare her parça 2 kare decode edince salınır — açılış süresini
+    // kısaltır. NOT: bu yüzden preferredForwardBufferDuration/maxBufferDuration İLK
+    // kareyi geciktirmez; yalnız yeniden-buffer yastığını ve seek/second-open'ı yönetir.
     options.isSecondOpen = true
     if liveLowLatency {
       options.preferredForwardBufferDuration = 2
       options.maxBufferDuration = 16
+      // FFmpeg yolunda ilk kare, avformat_find_stream_info'nun varsayılan 5 MB probe'u
+      // yavaş IPTV soketinden çekmesine takılıyordu. Bu iki değer, uygulamanın kendi
+      // remux giriş yolunda (RemuxHLSWriter) sahada kanıtlanmış değerlerdir; AVPlayer/HLS
+      // yolunda bu alanlar okunmaz (inert). `nobuffer` bilerek KAPALI — find_stream_info'nun
+      // ikincil ses parçasını kaçırmasına yol açabiliyor.
+      options.probesize = 1_500_000
+      options.maxAnalyzeDuration = 2_000_000  // AV_TIME_BASE birimi = 2.0s
     } else {
       options.preferredForwardBufferDuration = 3
       options.maxBufferDuration = 60
+      // VOD (mkv/avi/ts): çok parçalı başlıkları aç bırakmadan en kötü analiz süresini sınırla.
+      options.maxAnalyzeDuration = 3_000_000  // 3.0s tavan
     }
+    // Duran sokette tek IO 10 sn'de başarısız olsun; watchdog (12s) devreye girmeden
+    // FFmpeg gerçek hata kodunu döndürür. Yalnız FFmpeg yolu (AVPlayer bunu yok sayar).
+    options.formatContextOptions["rw_timeout"] = 10_000_000  // mikrosaniye
     // Remote commands are ours (VideoPlayerController). KSPlayerLayer's own
     // registration would double-handle events; its deinit still wipes all
     // targets regardless of this flag, which the controller compensates for.
@@ -362,6 +401,7 @@ final class KSPlayerEngine: NSObject, ObservableObject {
       subtitleModel.selectedSubtitleInfo = nil
       subtitleText = nil
       subtitleImage = nil
+      subtitleImageOrigin = .zero
       return
     }
     guard let info = subtitleInfosById[id] else { return }
@@ -397,6 +437,7 @@ final class KSPlayerEngine: NSObject, ObservableObject {
       subtitleModel.selectedSubtitleInfo = nil
       subtitleText = nil
       subtitleImage = nil
+      subtitleImageOrigin = .zero
     }
   }
 
@@ -434,6 +475,7 @@ final class KSPlayerEngine: NSObject, ObservableObject {
       let part = subtitleModel.parts.first
       subtitleText = part?.text
       subtitleImage = part?.image
+      subtitleImageOrigin = part?.origin ?? .zero
     }
   }
 
@@ -444,11 +486,14 @@ final class KSPlayerEngine: NSObject, ObservableObject {
     let item = DispatchWorkItem { [weak self] in
       guard let self, !self.isDisposed else { return }
       if !self.isPlaybackEstablished, self.playbackFailureMessage == nil {
+        self.playbackFailureIsRecoverable = true
         self.playbackFailureMessage = L("playback.error.timeout")
       }
     }
     loadTimeoutWorkItem = item
-    DispatchQueue.main.asyncAfter(deadline: .now() + 16, execute: item)
+    // Kept strictly above the 10s FFmpeg rw_timeout so its specific error surfaces first;
+    // trimmed from 16s so a dead channel doesn't spin the spinner as long.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: item)
   }
 
   private func cancelLoadTimeoutWatchdog() {
@@ -462,7 +507,17 @@ final class KSPlayerEngine: NSObject, ObservableObject {
 
   private func refreshDiagnostics() {
     guard let player = layer?.player else { return }
-    let size = player.naturalSize
+    var size = player.naturalSize
+    // AVPlayer's naturalSize is the encoded (unrotated) frame — it never consults the
+    // track's preferredTransform, unlike the FFmpeg path's display-matrix handling.
+    if let avPlayer = player as? KSAVPlayer,
+       let assetTrack = avPlayer.player.currentItem?.tracks
+         .first(where: { $0.isEnabled && $0.assetTrack?.mediaType == .video })?.assetTrack {
+      updateQuarterRotation(for: assetTrack)
+      if avTrackIsQuarterRotated {
+        size = CGSize(width: size.height, height: size.width)
+      }
+    }
     let w = Int(size.width)
     let h = Int(size.height)
     if videoDisplayWidth != w { videoDisplayWidth = w }
@@ -495,6 +550,33 @@ final class KSPlayerEngine: NSObject, ObservableObject {
     if isAirPlayVideoCapable != isAVPlayer { isAirPlayVideoCapable = isAVPlayer }
   }
 
+  /// Loads `preferredTransform` asynchronously (the sync property is deprecated since
+  /// iOS 16) once per track and caches whether the frame is quarter-rotated. The load
+  /// is near-instant for an already-playing item, and diagnostics are re-run on
+  /// completion so the swapped size is published without waiting for the next tick.
+  private func updateQuarterRotation(for track: AVAssetTrack) {
+    guard quarterRotationQueriedTrack !== track else { return }
+    quarterRotationQueriedTrack = track
+    avTrackIsQuarterRotated = false
+    Task { [weak self] in
+      guard let transform = try? await track.load(.preferredTransform) else { return }
+      guard let self, !self.isDisposed, self.quarterRotationQueriedTrack === track else { return }
+      let rotated = Self.isQuarterRotated(transform)
+      if rotated != self.avTrackIsQuarterRotated {
+        self.avTrackIsQuarterRotated = rotated
+        self.refreshDiagnostics()
+      }
+    }
+  }
+
+  /// True for a ~90°/270° `preferredTransform` (portrait-recorded mp4/mov), where the
+  /// encoded frame's width/height are swapped relative to the displayed orientation.
+  private static func isQuarterRotated(_ transform: CGAffineTransform) -> Bool {
+    var degrees = atan2(transform.b, transform.a) * 180 / .pi
+    if degrees < 0 { degrees += 360 }
+    return abs(degrees - 90) <= 1 || abs(degrees - 270) <= 1
+  }
+
   /// FFmpeg track'lerinde `codecName` her zaman dolu ama profil ekli gelir ("h264 (High)");
   /// formatDescription canlı TS'te extradata gelene kadar nil kalabilir — tespit codecName'in
   /// normalize edilmiş ilk kelimesine dayanır.
@@ -525,6 +607,9 @@ extension KSPlayerEngine: KSPlayerLayerDelegate {
       case .readyToPlay:
         self.cancelLoadTimeoutWatchdog()
         if !self.isPlaybackEstablished { self.isPlaybackEstablished = true }
+        // Establishing playback always supersedes a stale watchdog/error message.
+        if self.playbackFailureMessage != nil { self.playbackFailureMessage = nil }
+        if self.playbackFailureIsRecoverable { self.playbackFailureIsRecoverable = false }
         if self.isBuffering { self.isBuffering = false }
         self.isSeekable = layer.player.seekable
         // AVPlayer path: true AirPlay external playback.
@@ -577,6 +662,7 @@ extension KSPlayerEngine: KSPlayerLayerDelegate {
         let part = self.subtitleModel.parts.first
         self.subtitleText = part?.text
         self.subtitleImage = part?.image
+        self.subtitleImageOrigin = part?.origin ?? .zero
       }
     }
   }
@@ -590,14 +676,18 @@ extension KSPlayerEngine: KSPlayerLayerDelegate {
         if ns.domain == NSURLErrorDomain {
           switch ns.code {
           case NSURLErrorTimedOut:
+            self.playbackFailureIsRecoverable = true
             self.playbackFailureMessage = L("playback.error.timeout")
           case NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost,
                NSURLErrorNotConnectedToInternet:
+            self.playbackFailureIsRecoverable = true
             self.playbackFailureMessage = L("playback.error.cannot_reach")
           default:
+            self.playbackFailureIsRecoverable = false
             self.playbackFailureMessage = L("playback.error.failed_check_network")
           }
         } else {
+          self.playbackFailureIsRecoverable = false
           self.playbackFailureMessage = L("playback.error.failed_check_network")
         }
       } else {

@@ -23,6 +23,10 @@ final class AirPlayCastPlayer: NSObject {
   private var playerObservations: [NSKeyValueObservation] = []
   private var itemObservation: NSKeyValueObservation?
   private var reportedError = false
+  /// When the current item is a remux stream carrying an HLS WebVTT subtitle rendition,
+  /// enable it (so it shows on the AirPlay target) once the item is ready. Cleared after
+  /// the first selection so a later status change doesn't re-trigger it.
+  private var selectLegibleOnReady = false
 
   var onTime: ((TimeInterval) -> Void)?
   var onStateChange: (() -> Void)?
@@ -84,7 +88,7 @@ final class AirPlayCastPlayer: NSObject {
 
   /// Swaps the current item for a new URL. The AVPlayer (and with it the active
   /// AirPlay route) stays alive across loads.
-  func load(url: URL, startAt: TimeInterval?, autoPlay: Bool) {
+  func load(url: URL, startAt: TimeInterval?, autoPlay: Bool, preferredLegible: Bool = false) {
     if let item {
       NotificationCenter.default.removeObserver(
         self, name: .AVPlayerItemDidPlayToEndTime, object: item
@@ -92,6 +96,7 @@ final class AirPlayCastPlayer: NSObject {
     }
     itemObservation = nil
     reportedError = false
+    selectLegibleOnReady = preferredLegible
     let newItem = AVPlayerItem(asset: AVURLAsset(url: url))
     item = newItem
     itemObservation = newItem.observe(\.status) { [weak self] observedItem, _ in
@@ -106,6 +111,10 @@ final class AirPlayCastPlayer: NSObject {
                 userInfo: [NSLocalizedDescriptionKey: "cast item failed"]
               ))
         } else {
+          if observedItem.status == .readyToPlay, self.selectLegibleOnReady {
+            self.selectLegibleOnReady = false
+            self.enableFirstLegibleOption(on: observedItem)
+          }
           self.onStateChange?()
         }
       }
@@ -122,6 +131,20 @@ final class AirPlayCastPlayer: NSObject {
       )
     }
     if autoPlay { player.play() }
+  }
+
+  /// Turn on the (single) WebVTT subtitle rendition we added to the remux master, so it
+  /// renders on the AirPlay target. Only called when we authored that rendition, so the
+  /// first legible option is ours; a no-op if the group is absent (e.g. fMP4 skipped it).
+  private func enableFirstLegibleOption(on item: AVPlayerItem) {
+    let asset = item.asset
+    Task { @MainActor in
+      guard let group = try? await asset.loadMediaSelectionGroup(for: .legible),
+            let option = group.options.first,
+            self.item === item
+      else { return }
+      item.select(option, in: group)
+    }
   }
 
   @objc private func itemDidPlayToEnd(_ notification: Notification) {

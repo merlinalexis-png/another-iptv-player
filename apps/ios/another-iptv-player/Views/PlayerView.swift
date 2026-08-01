@@ -190,7 +190,7 @@ private struct PlayerViewImpl: View {
     @State private var saveHistoryTimer: Timer?
     @State private var hasInitialSeeked = false
     @AppStorage("player.debugOverlayEnabled") private var showDebugOverlay = false
-    @AppStorage("player.videoAspectMode") private var videoAspectModeRaw = VideoAspectMode.bestFit.rawValue
+    @AppStorage("player.videoAspectMode") private var videoAspectModeRaw = VideoAspectMode.fit.rawValue
     @AppStorage("player.pipEnabled") private var pipEnabled = true
     @AppStorage("player.continuePlayingInBackground") private var continuePlayingInBackground = true
     @AppStorage("player.speedUpOnLongPress") private var speedUpOnLongPress = true
@@ -244,11 +244,24 @@ private struct PlayerViewImpl: View {
     /// scaled view'a bağlı olmadığı için drag güvenilir. Pinch midpoint anchor için aşağıdaki
     /// `pinchAnchorState` kullanılır.
     @State private var videoPinchBase: CGFloat = 1
-    @State private var videoPinchLive: CGFloat = 1
+    /// Live-only pinch/pan values, isolated in an ObservableObject like `cardDrag` so
+    /// per-frame gesture updates re-render only `VideoZoomPanLayer`, not this whole body.
+    @State private var videoZoomPan = VideoZoomPanModel()
     @State private var videoPanCommitted: CGSize = .zero
-    @State private var videoPanLive: CGSize = .zero
+    /// The fitted (aspect-ratio) layout size of the surface — its rendered size is this
+    /// times `effectiveVideoScale`.
     @State private var videoViewportSize: CGSize = .zero
+    /// The full container (screen) size the surface is centered in. Pan bounds are the
+    /// overflow of the rendered surface past this, so panning never exposes the background.
+    @State private var videoContainerSize: CGSize = .zero
+    /// Extra scale applied in `.fill` mode to cover the screen (crop). 1 in fit/center.
+    /// Kept in sync with the container size so the pan-clamp math uses the true render scale.
+    @State private var videoAspectFillScale: CGFloat = 1
     @State private var pinchAnchorState: PinchAnchorState?
+
+    /// Per-window pixel density; used for the 1:1 (`.center`) mapping. `UIScreen.main.scale`
+    /// is wrong on external displays / multi-window and can collapse the surface to 1×1.
+    @Environment(\.displayScale) private var displayScale
 
     /// Pinch başlarken çekilen snapshot: zoomu pinch midpoint'ten yapmak için offset
     /// hesaplamasına ihtiyaç duyulan tüm sabit değerler.
@@ -257,6 +270,76 @@ private struct PlayerViewImpl: View {
         let containerCenter: CGPoint
         let startScale: CGFloat
         let startPanCommitted: CGSize
+    }
+
+    /// Live pinch/pan values only; mutating `@Published` here does not re-render
+    /// `PlayerViewImpl.body` (held via plain `@State`, not `@StateObject`) — only
+    /// `VideoZoomPanLayer` below, which observes it via `@ObservedObject`, does. Mirrors
+    /// `MiniCardDragModel` in MiniPlayerSupport.swift for the same reason.
+    private final class VideoZoomPanModel: ObservableObject {
+        @Published var pinchLive: CGFloat = 1
+        @Published var panLive: CGSize = .zero
+    }
+
+    /// Applies the live pinch/pan transform to the video surface. Observing `model`
+    /// directly keeps per-frame gesture updates from re-rendering the whole chrome —
+    /// only this layer re-evaluates while zooming/panning.
+    private struct VideoZoomPanLayer<Content: View>: View {
+        @ObservedObject var model: VideoZoomPanModel
+        let pinchBase: CGFloat
+        let zoomMax: CGFloat
+        let panCommitted: CGSize
+        let aspectFillScale: CGFloat
+        let viewportSize: CGSize
+        let containerSize: CGSize
+        let pinchAnchor: PinchAnchorState?
+        @ViewBuilder var content: Content
+
+        private var zoomScale: CGFloat {
+            min(max(pinchBase * model.pinchLive, 1), zoomMax)
+        }
+
+        private var effectiveScale: CGFloat {
+            aspectFillScale * zoomScale
+        }
+
+        private var panBounds: CGSize {
+            CGSize(
+                width: max(0, (viewportSize.width * effectiveScale - containerSize.width) / 2),
+                height: max(0, (viewportSize.height * effectiveScale - containerSize.height) / 2)
+            )
+        }
+
+        private var pinchZoomOffset: CGSize {
+            guard let s = pinchAnchor else { return .zero }
+            let M = s.screenMidpoint
+            let C = s.containerCenter
+            let S0 = s.startScale
+            let O0 = s.startPanCommitted
+            let Px = (M.x - C.x - O0.width) / S0
+            let Py = (M.y - C.y - O0.height) / S0
+            let S = effectiveScale
+            let Ox = M.x - C.x - S * Px
+            let Oy = M.y - C.y - S * Py
+            return CGSize(width: Ox - O0.width, height: Oy - O0.height)
+        }
+
+        private var effectiveOffset: CGSize {
+            let rawX = panCommitted.width + model.panLive.width + pinchZoomOffset.width
+            let rawY = panCommitted.height + model.panLive.height + pinchZoomOffset.height
+            let maxX = panBounds.width
+            let maxY = panBounds.height
+            return CGSize(
+                width: min(max(rawX, -maxX), maxX),
+                height: min(max(rawY, -maxY), maxY)
+            )
+        }
+
+        var body: some View {
+            content
+                .scaleEffect(effectiveScale, anchor: .center)
+                .offset(effectiveOffset)
+        }
     }
 
     /// Son yüklenen içerik; `streamId`/URL değişince önce bununla geçmiş kaydedilir (yeni struct alanları henüz güncellenmiş olabilir).
@@ -270,18 +353,36 @@ private struct PlayerViewImpl: View {
     private let videoZoomMax: CGFloat = 4
 
     private var videoZoomScale: CGFloat {
-        min(max(videoPinchBase * videoPinchLive, 1), videoZoomMax)
+        min(max(videoPinchBase * videoZoomPan.pinchLive, 1), videoZoomMax)
     }
 
-    /// Yalnızca committed + live pan'ı valid range'e clamp eder. `videoEffectiveOffset` tüm
+    /// The true on-screen render scale of the video: the user pinch-zoom multiplied by the
+    /// `.fill` cover scale. All pan-clamp / pinch-anchor math uses this so bounds are correct
+    /// whether the extra scale came from a pinch or from fill-mode cropping.
+    private var effectiveVideoScale: CGFloat {
+        videoAspectFillScale * videoZoomScale
+    }
+
+    /// Max pan offset on each axis: half the amount the rendered surface (fitted × effective
+    /// scale) overflows the container. Zero when the content fits, so panning never reveals
+    /// the black background — correct for both pinch-zoom and `.fill` cropping. Using the
+    /// container (not the fitted size) as the reference is what keeps Fill from over-panning.
+    private var videoPanBounds: CGSize {
+        CGSize(
+            width: max(0, (videoViewportSize.width * effectiveVideoScale - videoContainerSize.width) / 2),
+            height: max(0, (videoViewportSize.height * effectiveVideoScale - videoContainerSize.height) / 2)
+        )
+    }
+
+    /// Yalnızca committed + live pan'ı valid range'e clamp eder. `VideoZoomPanLayer.effectiveOffset` tüm
     /// bileşenleri birleşik şekilde clamp ettiği için gesture sırasında kullanılmaz; pinch end'de
     /// committed pan'ı tekrar clamp etmek için `commitVideoPanClamp` kullanır.
     private var videoPanClamped: CGSize {
-        let maxX = max(0, (videoViewportSize.width * (videoZoomScale - 1)) / 2)
-        let maxY = max(0, (videoViewportSize.height * (videoZoomScale - 1)) / 2)
+        let maxX = videoPanBounds.width
+        let maxY = videoPanBounds.height
         let raw = CGSize(
-            width: videoPanCommitted.width + videoPanLive.width,
-            height: videoPanCommitted.height + videoPanLive.height
+            width: videoPanCommitted.width + videoZoomPan.panLive.width,
+            height: videoPanCommitted.height + videoZoomPan.panLive.height
         )
         return CGSize(
             width: min(max(raw.width, -maxX), maxX),
@@ -302,25 +403,11 @@ private struct PlayerViewImpl: View {
         let Px = (M.x - C.x - O0.width) / S0
         let Py = (M.y - C.y - O0.height) / S0
         // Yeni ölçekte noktayı aynı ekran konumunda tutmak için gereken mutlak offset:
-        let S = videoZoomScale
+        let S = effectiveVideoScale
         let Ox = M.x - C.x - S * Px
         let Oy = M.y - C.y - S * Py
         // `videoPanCommitted` start değerine göre delta:
         return CGSize(width: Ox - O0.width, height: Oy - O0.height)
-    }
-
-    /// Gerçek offset: committed pan + live pan + pinch zoom offset hepsi birlikte **current
-    /// scale'e göre clamp** edilir. Zoom out sırasında max offset küçülür ve içerik viewport
-    /// sınırında kalır — eskiden zoom offset ayrı eklendiği için dışarı taşabiliyordu.
-    private var videoEffectiveOffset: CGSize {
-        let rawX = videoPanCommitted.width + videoPanLive.width + videoPinchZoomOffset.width
-        let rawY = videoPanCommitted.height + videoPanLive.height + videoPinchZoomOffset.height
-        let maxX = max(0, (videoViewportSize.width * (videoZoomScale - 1)) / 2)
-        let maxY = max(0, (videoViewportSize.height * (videoZoomScale - 1)) / 2)
-        return CGSize(
-            width: min(max(rawX, -maxX), maxX),
-            height: min(max(rawY, -maxY), maxY)
-        )
     }
 
     private var playbackPresentationKey: String {
@@ -376,12 +463,12 @@ private struct PlayerViewImpl: View {
     }
 
     private var selectedAspectMode: VideoAspectMode {
-        VideoAspectMode(rawValue: videoAspectModeRaw) ?? .bestFit
+        VideoAspectMode(rawValue: videoAspectModeRaw) ?? .fit
     }
 
     private var nextAspectMode: VideoAspectMode {
         let all = VideoAspectMode.allCases
-        guard let idx = all.firstIndex(of: selectedAspectMode) else { return .bestFit }
+        guard let idx = all.firstIndex(of: selectedAspectMode) else { return .fit }
         return all[(idx + 1) % all.count]
     }
 
@@ -392,26 +479,39 @@ private struct PlayerViewImpl: View {
         return w / h
     }
 
+    /// The layout frame the video surface is given, at the source's natural aspect ratio.
+    /// `.fit` and `.fill` both use this; `.fill` additionally applies `aspectFillScale` to
+    /// the surface transform to cover the screen and crops the overflow.
     private func fittedVideoSize(in viewport: CGSize) -> CGSize {
         let vw = max(viewport.width, 0)
         let vh = max(viewport.height, 0)
         guard vw > 0, vh > 0 else { return .zero }
-        switch selectedAspectMode {
-        case .center:
-            // Kaynak boyutu center: mümkünse 1:1, sığmıyorsa küçült.
-            let displayScale = max(UIScreen.main.scale, 1)
-            let sourceWPoints = max(CGFloat(player.videoWidth) / displayScale, 1)
-            let sourceHPoints = max(CGFloat(player.videoHeight) / displayScale, 1)
-            let scale = min(vw / sourceWPoints, vh / sourceHPoints, 1)
-            return CGSize(width: sourceWPoints * scale, height: sourceHPoints * scale)
-        default:
-            let ratio = max(selectedAspectMode.preferredAspectRatio ?? sourceVideoAspectRatio, 0.01)
-            let viewportRatio = vw / vh
-            if viewportRatio > ratio {
-                return CGSize(width: vh * ratio, height: vh)
-            }
-            return CGSize(width: vw, height: vw / ratio)
+        if selectedAspectMode == .center, player.videoWidth > 0, player.videoHeight > 0 {
+            // 1:1 pixel mapping; downscale only if the native size doesn't fit.
+            let scale = max(displayScale, 1)
+            let sourceWPoints = max(CGFloat(player.videoWidth) / scale, 1)
+            let sourceHPoints = max(CGFloat(player.videoHeight) / scale, 1)
+            let fit = min(vw / sourceWPoints, vh / sourceHPoints, 1)
+            return CGSize(width: sourceWPoints * fit, height: sourceHPoints * fit)
         }
+        // fit / fill (and center before real dimensions arrive): aspect-fit the source ratio.
+        return aspectFittedSize(ratio: sourceVideoAspectRatio, in: CGSize(width: vw, height: vh))
+    }
+
+    /// Largest box of `ratio` that fits inside `viewport` (letterbox/pillarbox).
+    private func aspectFittedSize(ratio: CGFloat, in viewport: CGSize) -> CGSize {
+        let r = max(ratio, 0.01)
+        if viewport.width / viewport.height > r {
+            return CGSize(width: viewport.height * r, height: viewport.height)
+        }
+        return CGSize(width: viewport.width, height: viewport.width / r)
+    }
+
+    /// Cover scale for `.fill`: multiplies the fitted frame up until it covers the whole
+    /// viewport (one axis matches, the other overflows and is clipped). 1 in fit/center.
+    private func aspectFillScale(viewport: CGSize, fitted: CGSize) -> CGFloat {
+        guard selectedAspectMode == .fill, fitted.width > 0, fitted.height > 0 else { return 1 }
+        return max(viewport.width / fitted.width, viewport.height / fitted.height)
     }
 
     /// Aynı `PlayerView` örneğinde başka videoya geçişi tanır (`onAppear` yalnızca ilk açılışta çalışır).
@@ -823,8 +923,13 @@ private struct PlayerViewImpl: View {
             containerExtension: containerExtension
         )
 
+        // KSOptions.startPlayTime (the `startSeconds` we pass) is honored ONLY by the
+        // FFmpeg engine — the AVPlayer path (mp4/m4v/mov/HLS) ignores it, which used to
+        // restart VOD resume at 0:00. For AVPlayer-native containers, leave
+        // hasInitialSeeked false so checkAndPerformResume() seeks once the item is seekable.
+        let usesFFmpegStartTime = KSPlayerEngine.prefersFFmpegFirst(for: url)
         let shouldStartFromResume = !isLiveStream && (resumeTimeMs ?? 0) > 5000
-        hasInitialSeeked = shouldStartFromResume
+        hasInitialSeeked = shouldStartFromResume && usesFFmpegStartTime
         bitrateSamples.removeAll()
         isScrubbing = false
         scrubValue = 0
@@ -833,7 +938,7 @@ private struct PlayerViewImpl: View {
         isFastForwarding = false
         player.setRate(1.0)
         videoPinchBase = 1
-        videoPinchLive = 1
+        videoZoomPan.pinchLive = 1
         videoPanCommitted = .zero
 
         log.info("Load playback: \(self.playbackIdentity, privacy: .public)")
@@ -842,7 +947,8 @@ private struct PlayerViewImpl: View {
                 playlistId: playlistId, type: type, streamId: streamId
             )
         )
-        let initialStartSeconds: TimeInterval? = shouldStartFromResume ? Double(resumeTimeMs ?? 0) / 1000.0 : nil
+        let initialStartSeconds: TimeInterval? =
+            (shouldStartFromResume && usesFFmpegStartTime) ? Double(resumeTimeMs ?? 0) / 1000.0 : nil
         if let initialStartSeconds {
             log.info("Starting playback with mpv start option: \(initialStartSeconds, privacy: .public)s")
         }
@@ -935,13 +1041,17 @@ private struct PlayerViewImpl: View {
         containerHeight: CGFloat,
         safeAreaBottom: CGFloat
     ) -> Bool {
+        // Only the on-screen controls (edge sliders / top & bottom chrome) need protecting
+        // from an accidental pull-down. With the chrome hidden — the normal viewing state —
+        // pull-down works from anywhere, so it never feels like a restricted zone.
+        guard showControls else { return false }
         let w = max(containerWidth, 1)
         let h = max(containerHeight, 1)
+
         let sideMargin: CGFloat = 110
         if start.x <= sideMargin || start.x >= w - sideMargin {
             return true
         }
-        guard showControls else { return false }
 
         let topChrome: CGFloat = 96
         if start.y <= topChrome {
@@ -1192,6 +1302,9 @@ private struct PlayerViewImpl: View {
                 if isMiniCommitted { return }  // mini card handles its own gestures
                 if showTrackSettings || showSubtitleAppearance { return }
                 if videoZoomScale > 1.02 || isScrubbing { return }
+                // While a 2x speed-hold is active it owns the touch until finger-up; the
+                // dismiss drag must not fight it (was the "drag-down vs long-press" conflict).
+                if isFastForwarding { return }
 
                 let start = value.startLocation
                 let t = value.translation
@@ -1348,20 +1461,36 @@ private struct PlayerViewImpl: View {
                     .zIndex(-10)
 
                 ZStack {
-                    if let cast = player.castController {
-                        KSPlayerVideoSurface(
-                            engine: player.engine,
-                            cast: cast,
-                            manualPiPTrigger: pipManualSignal,
-                            pipEnabled: pipEnabled,
-                            continuePlayingInBackground: continuePlayingInBackground
-                        )
-                        .id("KSPlaybackSurface")
+                    VideoZoomPanLayer(
+                        model: videoZoomPan,
+                        pinchBase: videoPinchBase,
+                        zoomMax: videoZoomMax,
+                        panCommitted: videoPanCommitted,
+                        aspectFillScale: videoAspectFillScale,
+                        viewportSize: videoViewportSize,
+                        containerSize: videoContainerSize,
+                        pinchAnchor: pinchAnchorState
+                    ) {
+                        ZStack {
+                            if let cast = player.castController {
+                                KSPlayerVideoSurface(
+                                    engine: player.engine,
+                                    cast: cast,
+                                    manualPiPTrigger: pipManualSignal,
+                                    pipEnabled: pipEnabled,
+                                    continuePlayingInBackground: continuePlayingInBackground
+                                )
+                                .id("KSPlaybackSurface")
+                            }
+                        }
+                        .frame(width: fittedSize.width, height: fittedSize.height)
                     }
                 }
-                .frame(width: fittedSize.width, height: fittedSize.height)
-                .scaleEffect(videoZoomScale, anchor: .center)
-                .offset(videoEffectiveOffset)
+                // Clip to the screen so the `.fill` crop never bleeds past the viewport into
+                // the chrome. Only Fill overflows, so the clip (an offscreen compositing pass
+                // that was adding jank on open / pull-down) is skipped in fit/center.
+                .frame(width: geo.size.width, height: geo.size.height)
+                .modifier(ConditionalClip(active: selectedAspectMode == .fill))
                 .allowsHitTesting(false)  // tüm touch UIKit overlay'de; video katmanı hit-test almaz
                 .zIndex(0)
 
@@ -1389,10 +1518,10 @@ private struct PlayerViewImpl: View {
                     onVideoPinchBegan: { location, containerBounds in
                         handleVideoPinchBegan(at: location, containerSize: containerBounds)
                     },
-                    onVideoPinchChanged: { videoPinchLive = $0 },
+                    onVideoPinchChanged: { videoZoomPan.pinchLive = $0 },
                     onVideoPinchEnded: { handleVideoPinchGestureEnded() },
                     onVideoPanChanged: { translation in
-                        videoPanLive = translation
+                        videoZoomPan.panLive = translation
                     },
                     onVideoPanEnded: { translation in
                         handleVideoPanEnded(translation: translation)
@@ -1658,15 +1787,10 @@ private struct PlayerViewImpl: View {
 
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            .onAppear { videoViewportSize = fittedSize }
-            .onChange(of: geo.size) { _, new in
-                videoViewportSize = fittedVideoSize(in: new)
-                commitVideoPanClamp()
-            }
-            .onChange(of: sourceVideoAspectRatio) { _, _ in
-                videoViewportSize = fittedVideoSize(in: geo.size)
-                commitVideoPanClamp()
-            }
+            .onAppear { syncVideoLayout(container: geo.size) }
+            .onChange(of: geo.size) { _, new in syncVideoLayout(container: new) }
+            .onChange(of: sourceVideoAspectRatio) { _, _ in syncVideoLayout(container: geo.size) }
+            .onChange(of: videoAspectModeRaw) { _, _ in syncVideoLayout(container: geo.size) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Video yüzeyi ekranın kenarlarına kadar uzansın. Kontroller ayrıca `outerSafeAreaInsets`
@@ -1678,7 +1802,7 @@ private struct PlayerViewImpl: View {
         pinchAnchorState = PinchAnchorState(
             screenMidpoint: location,
             containerCenter: CGPoint(x: containerSize.width / 2, y: containerSize.height / 2),
-            startScale: videoZoomScale,
+            startScale: effectiveVideoScale,
             startPanCommitted: videoPanCommitted
         )
     }
@@ -1692,8 +1816,8 @@ private struct PlayerViewImpl: View {
             height: videoPanCommitted.height + zoomDelta.height
         )
         // Scale'i komite et.
-        videoPinchBase = min(max(videoPinchBase * videoPinchLive, 1), videoZoomMax)
-        videoPinchLive = 1
+        videoPinchBase = min(max(videoPinchBase * videoZoomPan.pinchLive, 1), videoZoomMax)
+        videoZoomPan.pinchLive = 1
         if videoPinchBase < 1.02 {
             videoPinchBase = 1
             videoPanCommitted = .zero
@@ -1703,8 +1827,8 @@ private struct PlayerViewImpl: View {
     }
 
     private func handleVideoPanEnded(translation: CGSize) {
-        let maxX = max(0, (videoViewportSize.width * (videoZoomScale - 1)) / 2)
-        let maxY = max(0, (videoViewportSize.height * (videoZoomScale - 1)) / 2)
+        let maxX = videoPanBounds.width
+        let maxY = videoPanBounds.height
         let combined = CGSize(
             width: videoPanCommitted.width + translation.width,
             height: videoPanCommitted.height + translation.height
@@ -1713,16 +1837,26 @@ private struct PlayerViewImpl: View {
             width: min(max(combined.width, -maxX), maxX),
             height: min(max(combined.height, -maxY), maxY)
         )
-        videoPanLive = .zero
+        videoZoomPan.panLive = .zero
     }
 
     private func commitVideoPanClamp() {
-        let maxX = max(0, (videoViewportSize.width * (videoZoomScale - 1)) / 2)
-        let maxY = max(0, (videoViewportSize.height * (videoZoomScale - 1)) / 2)
+        let maxX = videoPanBounds.width
+        let maxY = videoPanBounds.height
         videoPanCommitted = CGSize(
             width: min(max(videoPanCommitted.width, -maxX), maxX),
             height: min(max(videoPanCommitted.height, -maxY), maxY)
         )
+    }
+
+    /// Recomputes the fitted frame + `.fill` cover scale for a container size and re-clamps
+    /// the pan. Called on appear, container resize, source-ratio change, and mode change.
+    private func syncVideoLayout(container: CGSize) {
+        let fitted = fittedVideoSize(in: container)
+        videoViewportSize = fitted
+        videoContainerSize = container
+        videoAspectFillScale = aspectFillScale(viewport: container, fitted: fitted)
+        commitVideoPanClamp()
     }
 
     /// Builds the Now Playing presentation, folding in the current EPG programme
@@ -2312,14 +2446,15 @@ private struct PlayerViewImpl: View {
                 resetTimer()
                 return
             }
-            showControls = false
+            // Cross-fade out like the native player instead of a hard cut.
+            withAnimation(.easeInOut(duration: 0.28)) { showControls = false }
         }
     }
 
     private func resetVideoTransformForAspectSwitch() {
         withAnimation(.easeInOut(duration: 0.2)) {
             videoPinchBase = 1
-            videoPinchLive = 1
+            videoZoomPan.pinchLive = 1
             videoPanCommitted = .zero
         }
     }
@@ -2341,6 +2476,15 @@ private struct PlayerViewImpl: View {
                 aspectToastText = nil
             }
         }
+    }
+}
+
+/// Applies `.clipped()` only when needed, so fit/center playback avoids the extra
+/// offscreen compositing pass (cheaper on open and during the pull-down morph).
+private struct ConditionalClip: ViewModifier {
+    let active: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if active { content.clipped() } else { content }
     }
 }
 

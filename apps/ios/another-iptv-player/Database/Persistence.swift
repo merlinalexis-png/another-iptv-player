@@ -3,7 +3,9 @@ import GRDB
 
 /// `localized_contains` her satır için çağrılır (100k+ satır); sorgu kelimelerini satır
 /// başına değil, sorgu değiştiğinde bir kez normalize etmek için son-sorgu önbelleği.
-private final class NormalizedQueryCache: @unchecked Sendable {
+/// `nonisolated`: runs inside GRDB's DatabaseFunction callbacks on DB queues (a
+/// DatabasePool serves concurrent readers), so all state is guarded by the lock.
+private nonisolated final class NormalizedQueryCache: @unchecked Sendable {
     private let lock = NSLock()
     private var lastQuery: String?
     private var lastWords: [String] = []
@@ -22,7 +24,7 @@ private final class NormalizedQueryCache: @unchecked Sendable {
     }
 }
 
-extension AppDatabase {
+nonisolated extension AppDatabase {
     static let shared = makeShared()
 
     /// True: disk DB açılamadı, oturum bellek-içi çalışıyor — bu oturumda yazılan hiçbir
