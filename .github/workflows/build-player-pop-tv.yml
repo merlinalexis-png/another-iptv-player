@@ -1,0 +1,65 @@
+name: Build Player Pop TV APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout build package
+        uses: actions/checkout@v4
+        with:
+          path: control
+
+      - name: Checkout audited upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: bsogulcan/another-iptv-player
+          ref: 8a65bf51f1655def8af99703fc98dabfea139592
+          path: source
+
+      - name: Apply Player Pop TV changes
+        run: git -C source apply ../control/player-pop-tv.patch
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: source/apps/android/**/*.gradle*
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android toolchain
+        run: >-
+          sdkmanager
+          'platforms;android-36'
+          'build-tools;36.0.0'
+          'ndk;27.2.12479018'
+          'cmake;3.22.1'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Stage libmpv binaries
+        run: make -C source/apps/android/Vendor/libmpv-android
+
+      - name: Run tests and build APK
+        working-directory: source/apps/android
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: player-pop-tv-preview
+          path: source/apps/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
