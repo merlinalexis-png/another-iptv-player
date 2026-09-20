@@ -1,0 +1,1120 @@
+From 8a65bf51f1655def8af99703fc98dabfea139592 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Mon, 14 Sep 2026 15:17:40 -0700
+Subject: [PATCH] feat(ios): expose and share offline downloads
+
+---
+ apps/ios/App-Info.plist                       |   4 +
+ apps/ios/EXPORTABLE_DOWNLOADS.md              |  54 ++++
+ .../Localization/ar.lproj/Localizable.strings |   1 +
+ .../Localization/de.lproj/Localizable.strings |   1 +
+ .../Localization/en.lproj/Localizable.strings |   1 +
+ .../Localization/es.lproj/Localizable.strings |   1 +
+ .../Localization/fr.lproj/Localizable.strings |   1 +
+ .../Localization/hi.lproj/Localizable.strings |   1 +
+ .../Localization/pt.lproj/Localizable.strings |   1 +
+ .../Localization/ru.lproj/Localizable.strings |   1 +
+ .../Localization/tr.lproj/Localizable.strings |   1 +
+ .../Localization/zh.lproj/Localizable.strings |   1 +
+ .../Models/DownloadManager.swift              | 142 +++++++--
+ .../Models/DownloadStorage.swift              | 295 +++++++++++++++++-
+ .../Views/Components/DownloadButton.swift     |  15 +
+ .../Views/Components/DownloadShareSheet.swift |  21 ++
+ .../Views/DownloadsView.swift                 |  55 ++++
+ .../another_iptv_playerApp.swift              |   5 +
+ .../DownloadStorageTests.swift                |  72 +++++
+ 19 files changed, 633 insertions(+), 40 deletions(-)
+ create mode 100644 apps/ios/EXPORTABLE_DOWNLOADS.md
+ create mode 100644 apps/ios/another-iptv-player/Views/Components/DownloadShareSheet.swift
+ create mode 100644 apps/ios/another-iptv-playerTests/DownloadStorageTests.swift
+
+diff --git a/apps/ios/App-Info.plist b/apps/ios/App-Info.plist
+index 6309cb9..47cd9c2 100644
+--- a/apps/ios/App-Info.plist
++++ b/apps/ios/App-Info.plist
+@@ -17,6 +17,10 @@
+ 	</array>
+ 	<key>ITSAppUsesNonExemptEncryption</key>
+ 	<false/>
++	<key>UIFileSharingEnabled</key>
++	<true/>
++	<key>LSSupportsOpeningDocumentsInPlace</key>
++	<true/>
+ 	<key>NSLocalNetworkUsageDescription</key>
+ 	<string>To play via AirPlay, video is streamed to your Apple TV over the local network.</string>
+ 	<key>NSAppTransportSecurity</key>
+diff --git a/apps/ios/EXPORTABLE_DOWNLOADS.md b/apps/ios/EXPORTABLE_DOWNLOADS.md
+new file mode 100644
+index 0000000..1af56df
+--- /dev/null
++++ b/apps/ios/EXPORTABLE_DOWNLOADS.md
+@@ -0,0 +1,54 @@
++# Exportable offline downloads
++
++This branch makes iOS offline downloads visible and shareable without loading large
++media files into memory.
++
++## Behaviour
++
++- New files are stored under `Documents/Downloads`, which is exposed to the Files app
++  by `UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace`.
++- On first launch, an in-place app update moves the former
++  `Application Support/Downloads` directory to the new location. The move is normally
++  metadata-only on the same APFS volume, so it does not duplicate multi-gigabyte files.
++- A completed row offers **Share / Save to Files** by leading swipe or long press.
++- The share sheet receives a local file URL. A temporary hard link supplies a readable
++  title when possible; the video bytes are not copied.
++- New filenames include series, season/episode, title, and stream identifier while
++  being sanitized and limited to the filesystem component-size limit.
++- URLSession resume blobs remain private in Application Support because they may embed
++  authenticated provider URLs; only completed media is exposed through Files.
++
++## Existing App Store installation
++
++An app installed alongside the App Store build has a different signed application
++identity and cannot read the App Store app's container. Therefore:
++
++- if this patch ships as an update signed by the original developer, the migration can
++  expose downloads already present in that installation;
++- if it is installed as a separate fork, only downloads made by the fork are available.
++
++For a private side-by-side build, set a unique bundle identifier and display name in
++Xcode. Installing on a physical iPhone/iPad requires Xcode with a signing team, an
++Ad Hoc profile, or TestFlight/App Store Connect through an Apple Developer Program
++account.
++
++## Additional download fixes
++
++- background tasks carry a stable item/path context and restore in O(tasks + rows)
++  rather than scanning every database row for every task;
++- successful file finalization happens after the active queue slot is released,
++  removing a completion race that could leave the next item queued;
++- system cancellations without resume data are requeued cleanly instead of remaining
++  stuck as downloading;
++- explicit user cancellations cannot be mistaken for orphaned system cancellations;
++- a queued database row is atomically claimed before starting its network task;
++- Xtream stream URLs, which can contain credentials, are no longer written to logs;
++- downloaded paths and extensions are sanitized against path traversal and invalid
++  filenames.
++
++## Verification
++
++`DownloadStorageTests.swift` covers readable/safe episode paths, hostile path and
++extension input, Unicode filename length, and extension fallback. A signed iOS build
++and on-device test are still required for the Files provider, AirDrop, background
++URLSession relaunch, and migration flows.
+diff --git a/apps/ios/another-iptv-player/Localization/ar.lproj/Localizable.strings b/apps/ios/another-iptv-player/Localization/ar.lproj/Localizable.strings
+index 9d00ea5..ceb4bab 100644
+--- a/apps/ios/another-iptv-player/Localization/ar.lproj/Localizable.strings
++++ b/apps/ios/another-iptv-player/Localization/ar.lproj/Localizable.strings
+@@ -247,6 +247,7 @@
+ "download.status.queued" = "في قائمة الانتظار";
+ "download.status.failed" = "فشل";
+ "download.play" = "تشغيل";
++"download.share" = "مشاركة / حفظ في الملفات";
+ "download.size_format" = "%@ / %@";
+ "download.settings" = "التنزيلات";
+ "download.wifi_only.title" = "تنزيل عبر Wi-Fi فقط";
+diff --git a/apps/ios/another-iptv-player/Localization/de.lproj/Localizable.strings b/apps/ios/another-iptv-player/Localization/de.lproj/Localizable.strings
+index 6436256..ed4ba18 100644
+--- a/apps/ios/another-iptv-player/Localization/de.lproj/Localizable.strings
++++ b/apps/ios/another-iptv-player/Localization/de.lproj/Localizable.strings
+@@ -247,6 +247,7 @@
+ "download.status.queued" = "In Warteschlange";
+ "download.status.failed" = "Fehlgeschlagen";
+ "download.play" = "Abspielen";
++"download.share" = "Teilen / In Dateien sichern";
+ "download.size_format" = "%@ / %@";
+ "download.settings" = "Downloads";
+ "download.wifi_only.title" = "Nur über WLAN laden";
+diff --git a/apps/ios/another-iptv-player/Localization/en.lproj/Localizable.strings b/apps/ios/another-iptv-player/Localization/en.lproj/Localizable.strings
+index 81b35e9..8d2223d 100644
+--- a/apps/ios/another-iptv-player/Localization/en.lproj/Localizable.strings
++++ b/apps/ios/another-iptv-player/Localization/en.lproj/Localizable.strings
+@@ -422,6 +422,7 @@
+ "download.status.queued" = "Queued";
+ "download.status.failed" = "Failed";
+ "download.play" = "Play";
++"download.share" = "Share / Save to Files";
+ "download.size_format" = "%@ / %@";
+ "download.settings" = "Downloads";
+ "download.wifi_only.title" = "Download on Wi-Fi only";
+diff --git a/apps/ios/another-iptv-player/Localization/es.lproj/Localizable.strings b/apps/ios/another-iptv-player/Localization/es.lproj/Localizable.strings
+index 25c0003..6393e20 100644
+--- a/apps/ios/another-iptv-player/Localization/es.lproj/Localizable.strings
++++ b/apps/ios/another-iptv-player/Localization/es.lproj/Localizable.strings
+@@ -247,6 +247,7 @@
+ "download.status.queued" = "En cola";
+ "download.status.failed" = "Error";
+ "download.play" = "Reproducir";
++"download.share" = "Compartir / Guardar en Archivos";
+ "download.size_format" = "%@ / %@";
+ "download.settings" = "Descargas";
+ "download.wifi_only.title" = "Descargar solo con Wi-Fi";
+diff --git a/apps/ios/another-iptv-player/Localization/fr.lproj/Localizable.strings b/apps/ios/another-iptv-player/Localization/fr.lproj/Localizable.strings
+index 23f8b9d..fbab396 100644
+--- a/apps/ios/another-iptv-player/Localization/fr.lproj/Localizable.strings
++++ b/apps/ios/another-iptv-player/Localization/fr.lproj/Localizable.strings
+@@ -247,6 +247,7 @@
+ "download.status.queued" = "En file d’attente";
+ "download.status.failed" = "Échec";
+ "download.play" = "Lire";
++"download.share" = "Partager / Enregistrer dans Fichiers";
+ "download.size_format" = "%@ / %@";
+ "download.settings" = "Téléchargements";
+ "download.wifi_only.title" = "Télécharger en Wi-Fi uniquement";
+diff --git a/apps/ios/another-iptv-player/Localization/hi.lproj/Localizable.strings b/apps/ios/another-iptv-player/Localization/hi.lproj/Localizable.strings
+index 2b0364d..4c610c7 100644
+--- a/apps/ios/another-iptv-player/Localization/hi.lproj/Localizable.strings
++++ b/apps/ios/another-iptv-player/Localization/hi.lproj/Localizable.strings
+@@ -247,6 +247,7 @@
+ "download.status.queued" = "कतार में";
+ "download.status.failed" = "विफल";
+ "download.play" = "चलाएँ";
++"download.share" = "साझा करें / फ़ाइलों में सहेजें";
+ "download.size_format" = "%@ / %@";
+ "download.settings" = "डाउनलोड";
+ "download.wifi_only.title" = "केवल Wi-Fi पर डाउनलोड";
+diff --git a/apps/ios/another-iptv-player/Localization/pt.lproj/Localizable.strings b/apps/ios/another-iptv-player/Localization/pt.lproj/Localizable.strings
+index d3a351b..28204cc 100644
+--- a/apps/ios/another-iptv-player/Localization/pt.lproj/Localizable.strings
++++ b/apps/ios/another-iptv-player/Localization/pt.lproj/Localizable.strings
+@@ -247,6 +247,7 @@
+ "download.status.queued" = "Na fila";
+ "download.status.failed" = "Falhou";
+ "download.play" = "Reproduzir";
++"download.share" = "Compartilhar / Salvar em Arquivos";
+ "download.size_format" = "%@ / %@";
+ "download.settings" = "Downloads";
+ "download.wifi_only.title" = "Baixar apenas no Wi-Fi";
+diff --git a/apps/ios/another-iptv-player/Localization/ru.lproj/Localizable.strings b/apps/ios/another-iptv-player/Localization/ru.lproj/Localizable.strings
+index a4c96ed..6658a84 100644
+--- a/apps/ios/another-iptv-player/Localization/ru.lproj/Localizable.strings
++++ b/apps/ios/another-iptv-player/Localization/ru.lproj/Localizable.strings
+@@ -247,6 +247,7 @@
+ "download.status.queued" = "В очереди";
+ "download.status.failed" = "Ошибка";
+ "download.play" = "Воспроизвести";
++"download.share" = "Поделиться / Сохранить в Файлы";
+ "download.size_format" = "%@ / %@";
+ "download.settings" = "Загрузки";
+ "download.wifi_only.title" = "Скачивать только по Wi-Fi";
+diff --git a/apps/ios/another-iptv-player/Localization/tr.lproj/Localizable.strings b/apps/ios/another-iptv-player/Localization/tr.lproj/Localizable.strings
+index f814c42..55d17d6 100644
+--- a/apps/ios/another-iptv-player/Localization/tr.lproj/Localizable.strings
++++ b/apps/ios/another-iptv-player/Localization/tr.lproj/Localizable.strings
+@@ -422,6 +422,7 @@
+ "download.status.queued" = "Sırada";
+ "download.status.failed" = "Başarısız";
+ "download.play" = "Oynat";
++"download.share" = "Paylaş / Dosyalara Kaydet";
+ "download.size_format" = "%@ / %@";
+ "download.settings" = "İndirmeler";
+ "download.wifi_only.title" = "Sadece Wi-Fi'da İndir";
+diff --git a/apps/ios/another-iptv-player/Localization/zh.lproj/Localizable.strings b/apps/ios/another-iptv-player/Localization/zh.lproj/Localizable.strings
+index 7d20fdb..4f622d5 100644
+--- a/apps/ios/another-iptv-player/Localization/zh.lproj/Localizable.strings
++++ b/apps/ios/another-iptv-player/Localization/zh.lproj/Localizable.strings
+@@ -247,6 +247,7 @@
+ "download.status.queued" = "排队中";
+ "download.status.failed" = "失败";
+ "download.play" = "播放";
++"download.share" = "共享 / 存储到“文件”";
+ "download.size_format" = "%@ / %@";
+ "download.settings" = "下载";
+ "download.wifi_only.title" = "仅在 Wi-Fi 下下载";
+diff --git a/apps/ios/another-iptv-player/Models/DownloadManager.swift b/apps/ios/another-iptv-player/Models/DownloadManager.swift
+index 68b9ddd..21f3a99 100644
+--- a/apps/ios/another-iptv-player/Models/DownloadManager.swift
++++ b/apps/ios/another-iptv-player/Models/DownloadManager.swift
+@@ -62,6 +62,13 @@ final class DownloadManager: NSObject, ObservableObject {
+     /// Disk alanı yetmediği için bizim iptal ettiğimiz indirmeler: delegate'in cancelled
+     /// dalında requeue yerine kalıcı failed işaretlenir.
+     private var spaceFailedIds: Set<String> = []
++    /// Explicit user/cleanup cancellations must never be adopted as orphaned system tasks.
++    private var intentionallyCancelledTasks: [Int: String] = [:]
++    /// `didFinishDownloadingTo` dosyayı senkron taşır; DB finalizasyonu ise ancak
++    /// `didCompleteWithError` aktif slotu bıraktıktan sonra yapılır. Böylece sıradaki
++    /// indirme completion/DB yarışında kuyrukta takılmaz.
++    private var finishedFileSizeById: [String: Int64] = [:]
++    private var finalizationErrorById: [String: Error] = [:]
+     /// `pumpQueue` aynı anda bir kere çalışsın diye — paralel çağrılar `pumpPending`'ı set eder.
+     private var pumpInFlight = false
+     /// Pump çalışırken başka bir pump tetiklendiyse, mevcut pump bitmeden önce bir kez daha döner.
+@@ -69,6 +76,24 @@ final class DownloadManager: NSObject, ObservableObject {
+     /// AppDelegate'in verdiği background completion handler; `urlSessionDidFinishEvents` çağırınca tetiklenir.
+     var backgroundCompletionHandler: (() -> Void)?
+ 
++    private struct TaskContext: Codable {
++        let id: String
++        let relativePath: String
++    }
++
++    private static func taskDescription(id: String, relativePath: String) -> String? {
++        guard let data = try? JSONEncoder().encode(TaskContext(id: id, relativePath: relativePath)) else {
++            return nil
++        }
++        return String(data: data, encoding: .utf8)
++    }
++
++    private static func taskContext(from task: URLSessionTask) -> TaskContext? {
++        guard let description = task.taskDescription,
++              let data = description.data(using: .utf8) else { return nil }
++        return try? JSONDecoder().decode(TaskContext.self, from: data)
++    }
++
+     override private init() {
+         super.init()
+         let config = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
+@@ -91,15 +116,23 @@ final class DownloadManager: NSObject, ObservableObject {
+                 .fetchAll(db)
+         }) ?? []
+ 
++        let rowsById = Dictionary(uniqueKeysWithValues: downloadingRows.map { ($0.id, $0) })
++        let rowsByRemoteURL = Dictionary(grouping: downloadingRows, by: \.remoteURL)
+         var matchedIds: Set<String> = []
+         if !downloadingRows.isEmpty {
+             let tasks = await session.allTasks
+             for task in tasks {
+-                guard let url = task.originalRequest?.url?.absoluteString,
+-                      let match = downloadingRows.first(where: { $0.remoteURL == url }),
+-                      let downloadTask = task as? URLSessionDownloadTask else {
++                guard let downloadTask = task as? URLSessionDownloadTask else {
+                     continue
+                 }
++                let describedId = Self.taskContext(from: task)?.id
++                let exactMatch = describedId.flatMap { rowsById[$0] }
++                let requestURL = task.originalRequest?.url?.absoluteString
++                    ?? task.currentRequest?.url?.absoluteString
++                let fallbackMatch = requestURL
++                    .flatMap { rowsByRemoteURL[$0] }
++                    .flatMap { candidates in candidates.first(where: { !matchedIds.contains($0.id) }) }
++                guard let match = exactMatch ?? fallbackMatch else { continue }
+                 taskToId[downloadTask.taskIdentifier] = match.id
+                 taskToRelativePath[downloadTask.taskIdentifier] = match.localPath
+                 idToTask[match.id] = downloadTask
+@@ -165,7 +198,16 @@ final class DownloadManager: NSObject, ObservableObject {
+         autoRetryCountById.removeValue(forKey: id)
+ 
+         let ext = containerExtension ?? "mp4"
+-        let relPath = DownloadStorage.relativePath(playlistId: playlistId, type: type, streamId: streamId, ext: ext)
++        let relPath = DownloadStorage.relativePath(
++            playlistId: playlistId,
++            type: type,
++            streamId: streamId,
++            ext: ext,
++            title: title,
++            secondaryTitle: secondaryTitle,
++            seasonNumber: seasonNumber,
++            episodeNumber: episodeNumber
++        )
+ 
+         do {
+             _ = try DownloadStorage.ensureParentDirectory(for: relPath)
+@@ -232,6 +274,8 @@ final class DownloadManager: NSObject, ObservableObject {
+     func cancel(id: String) {
+         let hadActiveTask = idToTask[id] != nil
+         if let task = idToTask[id] {
++            intentionallyCancelledTasks[task.taskIdentifier] = id
++            task.taskDescription = nil
+             task.cancel()
+             idToTask.removeValue(forKey: id)
+             taskToId.removeValue(forKey: task.taskIdentifier)
+@@ -250,6 +294,8 @@ final class DownloadManager: NSObject, ObservableObject {
+     func delete(id: String) async {
+         let hadActiveTask = idToTask[id] != nil
+         if let task = idToTask[id] {
++            intentionallyCancelledTasks[task.taskIdentifier] = id
++            task.taskDescription = nil
+             task.cancel()
+             idToTask.removeValue(forKey: id)
+             taskToId.removeValue(forKey: task.taskIdentifier)
+@@ -270,6 +316,8 @@ final class DownloadManager: NSObject, ObservableObject {
+         var hadAny = false
+         for id in idsToCancel {
+             if let task = idToTask[id] {
++                intentionallyCancelledTasks[task.taskIdentifier] = id
++                task.taskDescription = nil
+                 task.cancel()
+                 taskToId.removeValue(forKey: task.taskIdentifier)
+                 hadAny = true
+@@ -308,6 +356,8 @@ final class DownloadManager: NSObject, ObservableObject {
+         var hadAny = false
+         for id in activeIds {
+             if let task = idToTask[id] {
++                intentionallyCancelledTasks[task.taskIdentifier] = id
++                task.taskDescription = nil
+                 task.cancel()
+                 taskToId.removeValue(forKey: task.taskIdentifier)
+                 hadAny = true
+@@ -337,6 +387,8 @@ final class DownloadManager: NSObject, ObservableObject {
+     /// Tüm playlist'lerin indirmelerini (her statüde) siler.
+     func deleteAll() async {
+         for (id, task) in idToTask {
++            intentionallyCancelledTasks[task.taskIdentifier] = id
++            task.taskDescription = nil
+             task.cancel()
+             taskToId.removeValue(forKey: task.taskIdentifier)
+             progress.removeValue(forKey: id)
+@@ -442,12 +494,14 @@ final class DownloadManager: NSObject, ObservableObject {
+                     }
+                 }
+ 
+-                _ = try? await AppDatabase.shared.write { db in
+-                    if var row = try DBDownloadedItem.filter(Column("id") == next.id).fetchOne(db) {
+-                        row.status = DownloadStatus.downloading.rawValue
+-                        try row.update(db)
+-                    }
+-                }
++                let claimed = (try? await AppDatabase.shared.write { db -> Bool in
++                    guard var row = try DBDownloadedItem.filter(Column("id") == next.id).fetchOne(db),
++                          row.downloadStatus == .queued else { return false }
++                    row.status = DownloadStatus.downloading.rawValue
++                    try row.update(db)
++                    return true
++                }) ?? false
++                guard claimed else { continue }
+                 startTask(id: next.id, playlistId: next.playlistId, remoteURL: url, relPath: next.localPath)
+                 dbVersion &+= 1
+             }
+@@ -457,7 +511,9 @@ final class DownloadManager: NSObject, ObservableObject {
+     /// DB row'u zaten var kabul edilir. URLSession task'ini kurar ve bellek içi haritalara yazar.
+     /// Önceki denemeden resume data varsa kaldığı yerden devam eder, yoksa sıfırdan başlar.
+     private func startTask(id: String, playlistId: UUID, remoteURL: URL, relPath: String) {
+-        downloadLog.info("start id=\(id, privacy: .public) playlist=\(playlistId.uuidString, privacy: .public) url=\(remoteURL.absoluteString, privacy: .public)")
++        // Xtream URL'leri çoğunlukla kullanıcı adı ve parolayı path içinde taşır;
++        // URL'yi cihaz loglarına yazma.
++        downloadLog.info("start id=\(id, privacy: .public) playlist=\(playlistId.uuidString, privacy: .public)")
+         let task: URLSessionDownloadTask
+         if let resumeData = DownloadStorage.loadResumeData(forId: id) {
+             // Consume the blob up front: if this attempt fails again we either get
+@@ -471,6 +527,7 @@ final class DownloadManager: NSObject, ObservableObject {
+             request.allowsCellularAccess = !Self.wifiOnly
+             task = session.downloadTask(with: request)
+         }
++        task.taskDescription = Self.taskDescription(id: id, relativePath: relPath)
+         taskToId[task.taskIdentifier] = id
+         taskToRelativePath[task.taskIdentifier] = relPath
+         idToTask[id] = task
+@@ -605,7 +662,11 @@ extension DownloadManager: URLSessionDownloadDelegate {
+         // Dosya bu delegate metodu dönünce silinir; SENKRON taşımak zorundayız.
+         let (id, relPath) = MainActor.assumeIsolated { () -> (String?, String?) in
+             let taskId = downloadTask.taskIdentifier
+-            return (self.taskToId[taskId], self.taskToRelativePath[taskId])
++            let context = Self.taskContext(from: downloadTask)
++            return (
++                self.taskToId[taskId] ?? context?.id,
++                self.taskToRelativePath[taskId] ?? context?.relativePath
++            )
+         }
+         guard let id, let relPath else { return }
+ 
+@@ -616,11 +677,10 @@ extension DownloadManager: URLSessionDownloadDelegate {
+         }()
+         guard sourceSize > 0 else {
+             MainActor.assumeIsolated {
+-                _ = Task { await self.markFailed(
+-                    id: id,
+-                    error: NSError(domain: "Download", code: -1,
+-                                   userInfo: [NSLocalizedDescriptionKey: "Empty download payload"])
+-                ) }
++                self.finalizationErrorById[id] = NSError(
++                    domain: "Download", code: -1,
++                    userInfo: [NSLocalizedDescriptionKey: "Empty download payload"]
++                )
+             }
+             return
+         }
+@@ -633,13 +693,13 @@ extension DownloadManager: URLSessionDownloadDelegate {
+             try fm.moveItem(at: location, to: destination)
+         } catch {
+             MainActor.assumeIsolated {
+-                _ = Task { await self.markFailed(id: id, error: error) }
++                self.finalizationErrorById[id] = error
+             }
+             return
+         }
+ 
+         MainActor.assumeIsolated {
+-            _ = Task { await self.markCompleted(id: id, fallbackSize: sourceSize) }
++            self.finishedFileSizeById[id] = sourceSize
+         }
+     }
+ 
+@@ -655,8 +715,18 @@ extension DownloadManager: URLSessionDownloadDelegate {
+             // Guard'dan ÖNCE temizle: cancel/delete yolları taskToId'yi çoktan silmiş
+             // olabilir; aksi halde her iptal edilen indirme bir path girdisi sızdırır.
+             self.taskToRelativePath.removeValue(forKey: taskId)
++            if let cancelledId = self.intentionallyCancelledTasks.removeValue(forKey: taskId) {
++                self.taskToId.removeValue(forKey: taskId)
++                self.idToTask.removeValue(forKey: cancelledId)
++                self.idToPlaylistId.removeValue(forKey: cancelledId)
++                self.finishedFileSizeById.removeValue(forKey: cancelledId)
++                self.finalizationErrorById.removeValue(forKey: cancelledId)
++                self.spaceFailedIds.remove(cancelledId)
++                return
++            }
+             let resumeData = (error as NSError?)?.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
+-            guard let id = self.taskToId[taskId] else {
++            let context = Self.taskContext(from: task)
++            guard let id = self.taskToId[taskId] ?? context?.id else {
+                 // No in-memory mapping — typically a delegate event delivered right after a
+                 // relaunch (force-quit cancels background tasks and hands us their resume
+                 // data here, before restoreOutstandingTasks could match anything). Re-attach
+@@ -671,6 +741,8 @@ extension DownloadManager: URLSessionDownloadDelegate {
+             self.taskToId.removeValue(forKey: taskId)
+             self.idToTask.removeValue(forKey: id)
+             self.idToPlaylistId.removeValue(forKey: id)
++            let finishedSize = self.finishedFileSizeById.removeValue(forKey: id)
++            let finalizationError = self.finalizationErrorById.removeValue(forKey: id)
+ 
+             if let error = error {
+                 let ns = error as NSError
+@@ -695,10 +767,14 @@ extension DownloadManager: URLSessionDownloadDelegate {
+                     if let resumeData {
+                         DownloadStorage.saveResumeData(resumeData, forId: id)
+                         downloadLog.info("system-cancel id=\(id, privacy: .public) — resume data saklandı, kuyruğa geri alındı")
+-                        Task {
+-                            await self.requeueAfterError(id: id, errorMessage: error.localizedDescription, preserveProgress: true)
+-                            await self.pumpQueue()
+-                        }
++                    }
++                    Task {
++                        await self.requeueAfterError(
++                            id: id,
++                            errorMessage: error.localizedDescription,
++                            preserveProgress: resumeData != nil
++                        )
++                        await self.pumpQueue()
+                     }
+                     return
+                 }
+@@ -741,9 +817,23 @@ extension DownloadManager: URLSessionDownloadDelegate {
+                     }
+                 }
+             } else {
+-                // Başarılı tamamlanma: markCompleted didFinishDownloadingTo'da çağrıldı.
+                 self.autoRetryCountById.removeValue(forKey: id)
+-                Task { await self.pumpQueue() }
++                Task {
++                    if let finalizationError {
++                        await self.markFailed(id: id, error: finalizationError)
++                    } else if let finishedSize {
++                        await self.markCompleted(id: id, fallbackSize: finishedSize)
++                    } else {
++                        await self.markFailed(
++                            id: id,
++                            error: NSError(
++                                domain: "Download", code: -2,
++                                userInfo: [NSLocalizedDescriptionKey: "Downloaded file missing or empty"]
++                            )
++                        )
++                    }
++                    await self.pumpQueue()
++                }
+             }
+         }
+     }
+diff --git a/apps/ios/another-iptv-player/Models/DownloadStorage.swift b/apps/ios/another-iptv-player/Models/DownloadStorage.swift
+index e2796df..d8257d2 100644
+--- a/apps/ios/another-iptv-player/Models/DownloadStorage.swift
++++ b/apps/ios/another-iptv-player/Models/DownloadStorage.swift
+@@ -1,38 +1,161 @@
+ import Foundation
+ 
+ /// İndirilen medya dosyaları için cihaz üzerinde path yönetir.
+-/// Application Support/Downloads altında tutulur — Caches gibi iOS tarafından silinmez,
+-/// iCloud backup dışına alınır (medya dosyaları büyük).
++/// Documents/Downloads altında tutulur — Files uygulamasından erişilebilir,
++/// Caches gibi iOS tarafından silinmez ve iCloud backup dışına alınır (medya dosyaları büyük).
+ /// Pure FileManager namespace — used from URLSession delegate/background contexts.
+ nonisolated enum DownloadStorage {
+-    /// Downloads kök dizini. Uygulama güncellemelerinde korunur.
++    private static let migrationLock = NSLock()
++
++    enum StorageError: LocalizedError {
++        case invalidRelativePath
++        case missingDownload
++
++        var errorDescription: String? {
++            switch self {
++            case .invalidRelativePath:
++                return "Invalid download path"
++            case .missingDownload:
++                return "Downloaded file missing or empty"
++            }
++        }
++    }
++
++    struct PreparedExport: Identifiable {
++        let id = UUID()
++        let url: URL
++        fileprivate let temporaryLink: URL?
++    }
++
++    /// Downloads kök dizini. Documents altında olduğundan, Info.plist'teki file-sharing
++    /// anahtarlarıyla Files uygulamasında görünür. İlk açılışta eski
++    /// Application Support/Downloads dizini veri kopyalamadan taşınır.
+     static func rootDirectory() throws -> URL {
++        migrationLock.lock()
++        defer { migrationLock.unlock() }
++
+         let fm = FileManager.default
+-        let appSupport = try fm.url(
+-            for: .applicationSupportDirectory,
++        let documents = try fm.url(
++            for: .documentDirectory,
+             in: .userDomainMask,
+             appropriateFor: nil,
+             create: true
+         )
+-        let root = appSupport.appendingPathComponent("Downloads", isDirectory: true)
++        let root = documents.appendingPathComponent("Downloads", isDirectory: true)
++        try? migrateLegacyDirectoryIfNeeded(to: root, fileManager: fm)
+         if !fm.fileExists(atPath: root.path) {
+             try fm.createDirectory(at: root, withIntermediateDirectories: true)
+-            try markExcludedFromBackup(root)
+         }
++        try? markExcludedFromBackup(root)
+         return root
+     }
+ 
++    /// Pre-2.5 downloads lived in Application Support and were invisible to Files.
++    /// Moving the directory on the same volume is metadata-only (no multi-GB copy).
++    /// If a destination already exists, merge individual files conservatively.
++    private static func migrateLegacyDirectoryIfNeeded(to destination: URL, fileManager fm: FileManager) throws {
++        let appSupport = try fm.url(
++            for: .applicationSupportDirectory,
++            in: .userDomainMask,
++            appropriateFor: nil,
++            create: true
++        )
++        let legacy = appSupport.appendingPathComponent("Downloads", isDirectory: true)
++        guard fm.fileExists(atPath: legacy.path), legacy.standardizedFileURL != destination.standardizedFileURL else {
++            return
++        }
++
++        // Resume blobs can contain the original request URL (including Xtream credentials),
++        // so keep them in private Application Support rather than the Files-visible folder.
++        let legacyResume = legacy.appendingPathComponent(".resume", isDirectory: true)
++        if fm.fileExists(atPath: legacyResume.path) {
++            let privateResume = try resumeDataDirectory()
++            if let files = try? fm.contentsOfDirectory(
++                at: legacyResume,
++                includingPropertiesForKeys: nil,
++                options: [.skipsHiddenFiles]
++            ) {
++                for source in files {
++                    let target = privateResume.appendingPathComponent(source.lastPathComponent)
++                    if fm.fileExists(atPath: target.path) {
++                        try? fm.removeItem(at: source)
++                    } else {
++                        try fm.moveItem(at: source, to: target)
++                    }
++                }
++            }
++            try? fm.removeItem(at: legacyResume)
++        }
++
++        if !fm.fileExists(atPath: destination.path) {
++            try fm.moveItem(at: legacy, to: destination)
++            return
++        }
++
++        guard let enumerator = fm.enumerator(
++            at: legacy,
++            includingPropertiesForKeys: [.isDirectoryKey],
++            options: [.skipsPackageDescendants]
++        ) else { return }
++
++        let legacyPath = legacy.standardizedFileURL.path
++        for case let source as URL in enumerator {
++            let sourcePath = source.standardizedFileURL.path
++            guard sourcePath.hasPrefix(legacyPath + "/") else { continue }
++            let suffix = String(sourcePath.dropFirst(legacyPath.count + 1))
++            let target = destination.appendingPathComponent(suffix)
++            let values = try? source.resourceValues(forKeys: [.isDirectoryKey])
++            if values?.isDirectory == true {
++                if !fm.fileExists(atPath: target.path) {
++                    try fm.createDirectory(at: target, withIntermediateDirectories: true)
++                }
++            } else {
++                try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
++                if !fm.fileExists(atPath: target.path) {
++                    try fm.moveItem(at: source, to: target)
++                } else {
++                    // The visible destination wins on conflict. Remove the legacy duplicate
++                    // so migration does not repeat forever or retain the media twice.
++                    try? fm.removeItem(at: source)
++                }
++            }
++        }
++        try? fm.removeItem(at: legacy)
++    }
++
+     /// Belirli bir item için hedef relative path döner (DB'de saklanır).
+     /// Biçim: `<playlistId>/<type>/<streamId>.<ext>`
+-    static func relativePath(playlistId: UUID, type: String, streamId: String, ext: String) -> String {
+-        let safeExt = ext.isEmpty ? "mp4" : ext
+-        let safeStream = streamId.replacingOccurrences(of: "/", with: "_")
+-        return "\(playlistId.uuidString)/\(type)/\(safeStream).\(safeExt)"
++    static func relativePath(
++        playlistId: UUID,
++        type: String,
++        streamId: String,
++        ext: String,
++        title: String? = nil,
++        secondaryTitle: String? = nil,
++        seasonNumber: Int? = nil,
++        episodeNumber: Int? = nil
++    ) -> String {
++        let safeType = sanitizedPathComponent(type, fallback: "media", maxLength: 24)
++        let fileName = suggestedFileName(
++            type: type,
++            streamId: streamId,
++            ext: ext,
++            title: title,
++            secondaryTitle: secondaryTitle,
++            seasonNumber: seasonNumber,
++            episodeNumber: episodeNumber
++        )
++        return "\(playlistId.uuidString)/\(safeType)/\(fileName)"
+     }
+ 
+     /// DB'deki `localPath`'i absolute URL'e çevirir.
+     static func absoluteURL(forRelativePath relativePath: String) throws -> URL {
+-        try rootDirectory().appendingPathComponent(relativePath)
++        let root = try rootDirectory().standardizedFileURL
++        let candidate = root.appendingPathComponent(relativePath).standardizedFileURL
++        guard candidate.path.hasPrefix(root.path + "/") else {
++            throw StorageError.invalidRelativePath
++        }
++        return candidate
+     }
+ 
+     /// Hedef dosyanın parent klasörünü oluşturur.
+@@ -54,6 +177,143 @@ nonisolated enum DownloadStorage {
+         try mutable.setResourceValues(resourceValues)
+     }
+ 
++    // MARK: - Export / sharing
++
++    /// Prepares a readable filename for AirDrop / Save to Files without copying the media.
++    /// APFS hard links are metadata-only; if linking is unavailable, sharing falls back to
++    /// the original file URL rather than temporarily doubling storage use.
++    static func prepareExport(for item: DBDownloadedItem) throws -> PreparedExport {
++        let source = try absoluteURL(forRelativePath: item.localPath)
++        let fm = FileManager.default
++        guard fm.fileExists(atPath: source.path),
++              let values = try? source.resourceValues(forKeys: [.fileSizeKey]),
++              (values.fileSize ?? 0) > 0 else {
++            throw StorageError.missingDownload
++        }
++
++        let name = suggestedFileName(
++            type: item.type,
++            streamId: item.streamId,
++            ext: item.containerExtension ?? source.pathExtension,
++            title: item.title,
++            secondaryTitle: item.secondaryTitle,
++            seasonNumber: item.seasonNumber,
++            episodeNumber: item.episodeNumber
++        )
++        guard source.lastPathComponent != name else {
++            return PreparedExport(url: source, temporaryLink: nil)
++        }
++
++        let directory = fm.temporaryDirectory
++            .appendingPathComponent("AnotherIPTVExports", isDirectory: true)
++        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
++        let target = directory.appendingPathComponent(name, isDirectory: false)
++        try? fm.removeItem(at: target)
++        do {
++            try fm.linkItem(at: source, to: target)
++            return PreparedExport(url: target, temporaryLink: target)
++        } catch {
++            return PreparedExport(url: source, temporaryLink: nil)
++        }
++    }
++
++    static func finishExport(_ export: PreparedExport) {
++        guard let link = export.temporaryLink else { return }
++        try? FileManager.default.removeItem(at: link)
++    }
++
++    static func removeStaleExports() {
++        let directory = FileManager.default.temporaryDirectory
++            .appendingPathComponent("AnotherIPTVExports", isDirectory: true)
++        try? FileManager.default.removeItem(at: directory)
++    }
++
++    static func suggestedFileName(
++        type: String,
++        streamId: String,
++        ext: String,
++        title: String?,
++        secondaryTitle: String?,
++        seasonNumber: Int?,
++        episodeNumber: Int?
++    ) -> String {
++        var parts: [String] = []
++        if type == "episode", let series = secondaryTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !series.isEmpty {
++            parts.append(series)
++        }
++        if type == "episode", seasonNumber != nil || episodeNumber != nil {
++            parts.append(String(format: "S%02dE%02d", seasonNumber ?? 0, episodeNumber ?? 0))
++        }
++        if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines),
++           !title.isEmpty,
++           !parts.contains(where: { $0.caseInsensitiveCompare(title) == .orderedSame }) {
++            parts.append(title)
++        }
++
++        let normalizedStream = sanitizedPathComponent(streamId, fallback: "media", maxLength: 256)
++        var safeStream = truncatedUTF8(normalizedStream, maxBytes: 48)
++        if normalizedStream != streamId || normalizedStream.utf8.count > 48 {
++            safeStream = "\(truncatedUTF8(safeStream, maxBytes: 35))-\(stableIdentifierHash(streamId))"
++        }
++        let readable = truncatedUTF8(
++            sanitizedPathComponent(parts.joined(separator: " - "), fallback: safeStream, maxLength: 120),
++            maxBytes: 150
++        )
++        let safeExt = sanitizedExtension(ext)
++        let needsIdentifier = readable.caseInsensitiveCompare(safeStream) != .orderedSame
++        let candidate = needsIdentifier ? "\(readable) [\(safeStream)]" : readable
++        let base = truncatedUTF8(candidate, maxBytes: max(32, 240 - safeExt.utf8.count))
++        return "\(base).\(safeExt)"
++    }
++
++    private static func sanitizedExtension(_ value: String) -> String {
++        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789")
++        let cleaned = value.lowercased().unicodeScalars
++            .prefix { allowed.contains($0) }
++            .prefix(10)
++        let result = cleaned.map { String($0) }.joined()
++        return result.isEmpty ? "mp4" : result
++    }
++
++    private static func truncatedUTF8(_ value: String, maxBytes: Int) -> String {
++        var result = ""
++        var byteCount = 0
++        for character in value {
++            let text = String(character)
++            let characterBytes = text.utf8.count
++            guard byteCount + characterBytes <= maxBytes else { break }
++            result.append(character)
++            byteCount += characterBytes
++        }
++        return result
++    }
++
++    /// Stable FNV-1a suffix used only when sanitizing/truncating could merge two stream IDs.
++    private static func stableIdentifierHash(_ value: String) -> String {
++        var hash: UInt64 = 14_695_981_039_346_656_037
++        for byte in value.utf8 {
++            hash ^= UInt64(byte)
++            hash = hash &* 1_099_511_628_211
++        }
++        return String(String(hash, radix: 16).suffix(10))
++    }
++
++    private static func sanitizedPathComponent(_ value: String, fallback: String, maxLength: Int) -> String {
++        let forbidden = CharacterSet(charactersIn: "/\\:?%*|\"<>")
++            .union(.controlCharacters)
++            .union(.newlines)
++        var result = value.components(separatedBy: forbidden).joined(separator: "_")
++        result = result.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
++        result = result.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
++        while result.contains("__") {
++            result = result.replacingOccurrences(of: "__", with: "_")
++        }
++        if result.isEmpty || result == "." || result == ".." {
++            result = fallback
++        }
++        return String(result.prefix(maxLength))
++    }
++
+     /// Playlist silinince tüm dosyalarını diskten siler.
+     static func removePlaylistDirectory(playlistId: UUID) {
+         guard let root = try? rootDirectory() else { return }
+@@ -79,13 +339,20 @@ nonisolated enum DownloadStorage {
+     // MARK: - Resume data
+ 
+     /// Directory holding URLSession resume-data blobs for interrupted downloads.
+-    /// Lives under the (backup-excluded) downloads root so blobs survive relaunches.
++    /// Kept in private Application Support because resume data may embed authenticated URLs.
+     private static func resumeDataDirectory() throws -> URL {
+-        let dir = try rootDirectory().appendingPathComponent(".resume", isDirectory: true)
+         let fm = FileManager.default
++        let appSupport = try fm.url(
++            for: .applicationSupportDirectory,
++            in: .userDomainMask,
++            appropriateFor: nil,
++            create: true
++        )
++        let dir = appSupport.appendingPathComponent("DownloadResumeData", isDirectory: true)
+         if !fm.fileExists(atPath: dir.path) {
+             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+         }
++        try? markExcludedFromBackup(dir)
+         return dir
+     }
+ 
+diff --git a/apps/ios/another-iptv-player/Views/Components/DownloadButton.swift b/apps/ios/another-iptv-player/Views/Components/DownloadButton.swift
+index ec48c41..ba3c66b 100644
+--- a/apps/ios/another-iptv-player/Views/Components/DownloadButton.swift
++++ b/apps/ios/another-iptv-player/Views/Components/DownloadButton.swift
+@@ -26,6 +26,7 @@ struct DownloadButton: View {
+ 
+     @ObservedObject private var manager = DownloadManager.shared
+     @Query<DownloadedItemByIDRequest> private var item: DBDownloadedItem?
++    @State private var preparedExport: DownloadStorage.PreparedExport?
+ 
+     init(
+         id: String,
+@@ -80,6 +81,9 @@ struct DownloadButton: View {
+         }
+         .buttonStyle(.plain)
+         .contextMenu { contextMenuItems }
++        .sheet(item: $preparedExport) { export in
++            DownloadShareSheet(export: export)
++        }
+     }
+ 
+     @ViewBuilder
+@@ -156,6 +160,13 @@ struct DownloadButton: View {
+                 Label(L("download.cancel"), systemImage: "xmark")
+             }
+         case .completed:
++            if let item {
++                Button {
++                    share(item)
++                } label: {
++                    Label(L("download.share"), systemImage: "square.and.arrow.up")
++                }
++            }
+             Button(role: .destructive) {
+                 Task { await manager.delete(id: id) }
+             } label: {
+@@ -173,6 +184,10 @@ struct DownloadButton: View {
+         }
+     }
+ 
++    private func share(_ item: DBDownloadedItem) {
++        preparedExport = try? DownloadStorage.prepareExport(for: item)
++    }
++
+     private func primaryAction() {
+         switch state {
+         case .idle, .failed:
+diff --git a/apps/ios/another-iptv-player/Views/Components/DownloadShareSheet.swift b/apps/ios/another-iptv-player/Views/Components/DownloadShareSheet.swift
+new file mode 100644
+index 0000000..20f93e0
+--- /dev/null
++++ b/apps/ios/another-iptv-player/Views/Components/DownloadShareSheet.swift
+@@ -0,0 +1,21 @@
++import SwiftUI
++import UIKit
++
++/// Native share sheet for a completed local download. It passes a file URL to
++/// AirDrop / Files / other apps instead of loading a potentially multi-GB video in memory.
++struct DownloadShareSheet: UIViewControllerRepresentable {
++    let export: DownloadStorage.PreparedExport
++
++    func makeUIViewController(context: Context) -> UIActivityViewController {
++        let controller = UIActivityViewController(
++            activityItems: [export.url],
++            applicationActivities: nil
++        )
++        controller.completionWithItemsHandler = { _, _, _, _ in
++            DownloadStorage.finishExport(export)
++        }
++        return controller
++    }
++
++    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
++}
+diff --git a/apps/ios/another-iptv-player/Views/DownloadsView.swift b/apps/ios/another-iptv-player/Views/DownloadsView.swift
+index f05839e..ea7ce57 100644
+--- a/apps/ios/another-iptv-player/Views/DownloadsView.swift
++++ b/apps/ios/another-iptv-player/Views/DownloadsView.swift
+@@ -15,6 +15,7 @@ struct DownloadsView: View {
+     @State private var debounceTask: Task<Void, Never>?
+     @State private var pendingMovieDetail: DBVODStream?
+     @State private var pendingSeriesDetail: DBSeries?
++    @State private var preparedExport: DownloadStorage.PreparedExport?
+     /// "Tamamlandı" görünen ama dosyası diskte olmayan kayıt (cihaz geri yükleme sonrası
+     /// tipik durum — Downloads klasörü yedeğe girmez). Alert ile yeniden indirme önerilir.
+     @State private var missingFileItem: DBDownloadedItem?
+@@ -137,6 +138,9 @@ struct DownloadsView: View {
+         .navigationDestination(item: $pendingSeriesDetail) { series in
+             SeriesDetailView(playlist: playlist, series: series)
+         }
++        .sheet(item: $preparedExport) { export in
++            DownloadShareSheet(export: export)
++        }
+         .alert(
+             L("download.missing_file.title"),
+             isPresented: Binding(
+@@ -185,6 +189,48 @@ struct DownloadsView: View {
+             row(item)
+         }
+         .buttonStyle(.plain)
++        .contextMenu {
++            switch item.downloadStatus {
++            case .completed:
++                Button {
++                    share(item)
++                } label: {
++                    Label(L("download.share"), systemImage: "square.and.arrow.up")
++                }
++                Button(role: .destructive) {
++                    Task { await manager.delete(id: item.id) }
++                } label: {
++                    Label(L("download.delete"), systemImage: "trash")
++                }
++            case .failed:
++                Button {
++                    performPrimaryAction(item)
++                } label: {
++                    Label(L("download.retry"), systemImage: "arrow.clockwise")
++                }
++                Button(role: .destructive) {
++                    Task { await manager.delete(id: item.id) }
++                } label: {
++                    Label(L("download.delete"), systemImage: "trash")
++                }
++            case .downloading, .queued:
++                Button(role: .destructive) {
++                    manager.cancel(id: item.id)
++                } label: {
++                    Label(L("download.cancel"), systemImage: "xmark")
++                }
++            }
++        }
++        .swipeActions(edge: .leading, allowsFullSwipe: false) {
++            if item.downloadStatus == .completed {
++                Button {
++                    share(item)
++                } label: {
++                    Label(L("download.share"), systemImage: "square.and.arrow.up")
++                }
++                .tint(.accentColor)
++            }
++        }
+         .swipeActions(edge: .trailing) {
+             switch item.downloadStatus {
+             case .downloading, .queued:
+@@ -203,6 +249,15 @@ struct DownloadsView: View {
+         }
+     }
+ 
++    private func share(_ item: DBDownloadedItem) {
++        do {
++            preparedExport = try DownloadStorage.prepareExport(for: item)
++        } catch {
++            // Playback and export have the same recovery when the local file vanished.
++            missingFileItem = item
++        }
++    }
++
+     private func performPrimaryAction(_ item: DBDownloadedItem) {
+         switch item.downloadStatus {
+         case .downloading, .queued:
+diff --git a/apps/ios/another-iptv-player/another_iptv_playerApp.swift b/apps/ios/another-iptv-player/another_iptv_playerApp.swift
+index a9608ac..0bd263b 100644
+--- a/apps/ios/another-iptv-player/another_iptv_playerApp.swift
++++ b/apps/ios/another-iptv-player/another_iptv_playerApp.swift
+@@ -31,6 +31,11 @@ struct another_iptv_playerApp: App {
+     init() {
+         IPTVRemoteImagePipeline.installAsShared()
+         _ = AppDatabase.shared
++        // Make pre-update offline files visible in Files as soon as the app launches.
++        // The normal APFS directory move is metadata-only and completing it here also
++        // makes legacy resume data available before the background queue is restored.
++        DownloadStorage.removeStaleExports()
++        _ = try? DownloadStorage.rootDirectory()
+         MockFixture.seedIfNeeded()
+         UserDefaults.standard.register(defaults: [
+             "player.pipEnabled": true,
+diff --git a/apps/ios/another-iptv-playerTests/DownloadStorageTests.swift b/apps/ios/another-iptv-playerTests/DownloadStorageTests.swift
+new file mode 100644
+index 0000000..851ba31
+--- /dev/null
++++ b/apps/ios/another-iptv-playerTests/DownloadStorageTests.swift
+@@ -0,0 +1,72 @@
++import Foundation
++import Testing
++@testable import another_iptv_player
++
++struct DownloadStorageTests {
++    @Test func episodePathIsReadableAndSafe() {
++        let playlistId = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
++        let path = DownloadStorage.relativePath(
++            playlistId: playlistId,
++            type: "episode/../../escape",
++            streamId: "42/../../../private",
++            ext: "mkv/../../payload",
++            title: "The / Finale",
++            secondaryTitle: "Example: Series",
++            seasonNumber: 2,
++            episodeNumber: 7
++        )
++
++        let components = path.split(separator: "/")
++        #expect(components.count == 3)
++        #expect(components.allSatisfy { $0 != "." && $0 != ".." })
++        #expect(components.last?.hasSuffix(".mkv") == true)
++        #expect(components.last?.contains("Example_ Series - S02E07 - The _ Finale") == true)
++    }
++
++    @Test func generatedFilenameFitsFilesystemComponentLimit() {
++        let filename = DownloadStorage.suggestedFileName(
++            type: "episode",
++            streamId: String(repeating: "🧭", count: 100),
++            ext: "matroska",
++            title: String(repeating: "é", count: 500),
++            secondaryTitle: String(repeating: "影", count: 500),
++            seasonNumber: 123,
++            episodeNumber: 456
++        )
++
++        #expect(filename.utf8.count <= 255)
++        #expect(filename.hasSuffix(".matroska"))
++    }
++
++    @Test func blankExtensionFallsBackToMP4() {
++        let filename = DownloadStorage.suggestedFileName(
++            type: "vod",
++            streamId: "99",
++            ext: "../",
++            title: "Movie",
++            secondaryTitle: nil,
++            seasonNumber: nil,
++            episodeNumber: nil
++        )
++
++        #expect(filename.hasSuffix(".mp4"))
++    }
++
++    @Test func sanitizedStreamIdentifiersDoNotCollide() {
++        let common: (String) -> String = { streamId in
++            DownloadStorage.suggestedFileName(
++                type: "vod",
++                streamId: streamId,
++                ext: "mp4",
++                title: "Movie",
++                secondaryTitle: nil,
++                seasonNumber: nil,
++                episodeNumber: nil
++            )
++        }
++
++        #expect(common("same/id") != common("same_id"))
++        #expect(common(String(repeating: "a", count: 100) + "1")
++            != common(String(repeating: "a", count: 100) + "2"))
++    }
++}
+-- 
+2.51.1
+
