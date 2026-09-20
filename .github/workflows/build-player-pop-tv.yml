@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - 'player-pop-tv.patch'
+      - 'ios-exportable-downloads.patch'
       - '.github/workflows/build-player-pop-tv.yml'
 
 permissions:
@@ -25,11 +26,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: bsogulcan/another-iptv-player
-          ref: 8a65bf51f1655def8af99703fc98dabfea139592
+          ref: ba8a6e577053a611d50b2c74de01e38277621093
           path: source
 
-      - name: Apply Player Pop TV changes
-        run: git -C source apply ../control/player-pop-tv.patch
+      - name: Apply audited fixes
+        run: |
+          git -C source apply ../control/ios-exportable-downloads.patch
+          git -C source apply ../control/player-pop-tv.patch
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
