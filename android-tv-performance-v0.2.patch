@@ -1,0 +1,1627 @@
+From f18ad2cdd3dc57e015ef76d78982c97795c56989 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sun, 20 Sep 2026 22:06:59 +0200
+Subject: [PATCH] fix(android-tv): bound catalog memory and stabilize playback
+
+---
+ apps/android/TV_PREVIEW.md                    |  11 +-
+ apps/android/app/build.gradle.kts             |   4 +-
+ .../data/PlaylistContentStore.kt              | 228 +++++++++++++-----
+ .../data/local/AppDatabase.kt                 |  25 +-
+ .../anotheriptvplayer/data/local/Entities.kt  |  16 +-
+ .../data/local/LiveStreamDao.kt               |  35 +++
+ .../anotheriptvplayer/data/local/SeriesDao.kt |  54 +++++
+ .../data/local/VodStreamDao.kt                |  55 +++++
+ .../networking/XtreamApiClient.kt             |  95 ++++++++
+ .../anotheriptvplayer/player/MPVPlayer.kt     |  70 +++++-
+ .../anotheriptvplayer/ui/AppNavigation.kt     |   9 -
+ .../ui/search/SearchScreen.kt                 |  91 +++----
+ .../ui/tv/PremiumTvDashboardScreen.kt         | 117 ++++++---
+ .../anotheriptvplayer/ui/tv/TvComponents.kt   |  52 ++++
+ .../anotheriptvplayer/ui/tv/TvHomeScreen.kt   | 196 +++++++++------
+ .../app/src/main/res/values-fr/strings.xml    |   1 +
+ .../app/src/main/res/values-tr/strings.xml    |   1 +
+ .../app/src/main/res/values/strings.xml       |   1 +
+ 18 files changed, 811 insertions(+), 250 deletions(-)
+
+diff --git a/apps/android/TV_PREVIEW.md b/apps/android/TV_PREVIEW.md
+index 48c4ba5..32691d2 100644
+--- a/apps/android/TV_PREVIEW.md
++++ b/apps/android/TV_PREVIEW.md
+@@ -4,19 +4,20 @@ This native Android build is a separate, remote-first preview of Another IPTV.
+ Its application id is `dev.android.anotheriptvplayer.tvpreview`, so it can be
+ installed next to another build without replacing it.
+ 
+-## Included in 0.1
++## Included in 0.2
+ 
+ - Android TV / Google TV launcher entry and Player Pop compatibility
+-- premium dark home with hero, catalog rails and visible D-pad focus
++- premium dark home with hero, compact category filters and visible D-pad focus
+ - Live, Movies and Series catalog navigation
+ - Continue Watching and local, private recommendations
+ - New Episodes button, unread badge and an expandable notification drawer
+-- automatic catalog refresh baseline (at most once every six hours)
++- streaming catalogue ingestion in 250-row chunks to cap peak RAM usage
++- bounded home shelves and paged category queries; the full catalogue is never copied into TV memory
+ - existing Xtream, playback, favorites, history and offline-download plumbing
+ - accent-insensitive title, actor and director search when metadata is available
+ - remote microphone search with French/English auto-switch on Android 14+
+ - French and English TV labels
+-- parallel catalog synchronization for shorter refreshes
++- stability-first MPV buffering plus automatic live-stream reconnects
+ - safer resumable downloads and redacted IPTV credentials in logs
+ 
+ The new-episode feed uses Xtream's `last_modified` value. Some providers do not
+@@ -48,7 +49,7 @@ apps/android/app/build/outputs/apk/debug/app-debug.apk
+ Enable installation from unknown sources for the file-manager app used on the
+ Player Pop, copy the APK through a USB drive or a trusted local transfer tool,
+ then open it and confirm installation. A future preview can add in-app update
+-delivery; 0.1 intentionally keeps distribution simple and account-free.
++delivery; 0.2 intentionally keeps distribution simple and account-free.
+ 
+ ## Planned after the first TV preview
+ 
+diff --git a/apps/android/app/build.gradle.kts b/apps/android/app/build.gradle.kts
+index 111fc51..2671f87 100644
+--- a/apps/android/app/build.gradle.kts
++++ b/apps/android/app/build.gradle.kts
+@@ -17,8 +17,8 @@ android {
+         applicationId = "dev.android.anotheriptvplayer.tvpreview"
+         minSdk = 26
+         targetSdk = 36
+-        versionCode = 100
+-        versionName = "0.1.0-tv-preview"
++        versionCode = 200
++        versionName = "0.2.0-tv-preview"
+ 
+         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+ 
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/PlaylistContentStore.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/PlaylistContentStore.kt
+index 0aea1cf..728d564 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/PlaylistContentStore.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/PlaylistContentStore.kt
+@@ -51,6 +51,7 @@ class PlaylistContentStore(
+ ) {
+ 
+     private val appContext: Context = context.applicationContext
++    private val syncState = appContext.getSharedPreferences(SYNC_STATE_PREFS, Context.MODE_PRIVATE)
+ 
+     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+ 
+@@ -109,6 +110,67 @@ class PlaylistContentStore(
+         scope.launch { loadPlaylistSuspending(playlist) }
+     }
+ 
++    /**
++     * Memory-bounded TV load. The television UI never needs every catalogue
++     * row in RAM: it gets categories plus small, database-ranked home shelves;
++     * category browsing and search are served by paged SQL queries below.
++     */
++    suspend fun loadPlaylistForTvSuspending(playlist: Playlist) {
++        val token = UUID.randomUUID()
++        loadToken = token
++        _loadError.value = null
++        _loadingMessage.value = null
++
++        if (_activePlaylistId.value != playlist.id) {
++            clearLists()
++            _activePlaylistId.value = playlist.id
++        }
++        _isLoading.value = true
++
++        try {
++            if (needsNetworkBootstrap(playlist.id)) {
++                _loadingMessage.value = appContext.getString(R.string.sync_preparing)
++                syncFromNetworkReplacingLocal(playlist) { message ->
++                    if (loadToken == token) _loadingMessage.value = message
++                }
++                if (loadToken != token) return
++            }
++
++            val categories = fetchCategoriesOnly(playlist.id)
++            if (loadToken != token) return
++            _liveCategories.value = categories.live
++            _vodCategories.value = categories.vod
++            _seriesCategories.value = categories.series
++
++            // These SQL queries return at most a few dozen rows each. Joining
++            // and de-duplicating them is intentionally bounded and cheap.
++            val recent = database.vodStreamDao().recentlyAdded(playlist.id, TV_HOME_RECENT_LIMIT)
++            val rated = database.vodStreamDao().topRated(playlist.id, TV_HOME_RATED_LIMIT)
++            val homeMovies = (recent + rated)
++                .distinctBy { it.stream.streamId }
++                .take(TV_HOME_MOVIE_LIMIT)
++            val homeSeries = database.seriesDao()
++                .recentlyUpdated(playlist.id, TV_HOME_SERIES_LIMIT)
++
++            if (loadToken != token) return
++            _liveStreams.value = emptyList()
++            _vodStreams.value = homeMovies
++            _seriesItems.value = homeSeries
++            _liveStreamsByCategoryId.value = emptyMap()
++            _vodStreamsByCategoryId.value = emptyMap()
++            _seriesItemsByCategoryId.value = emptyMap()
++            _streamsLoaded.value = true
++            _loadingMessage.value = null
++            _isLoading.value = false
++        } catch (e: Throwable) {
++            if (loadToken != token) return
++            Log.e(TAG, "loadPlaylistForTv failed (${e.javaClass.simpleName})")
++            _loadError.value = e.message ?: e.javaClass.simpleName
++            _loadingMessage.value = null
++            _isLoading.value = false
++        }
++    }
++
+     /**
+      * Convenience for callers that already have a coroutine to await on
+      * (e.g. tests, or UI that wants to chain navigation after the sync).
+@@ -221,7 +283,52 @@ class PlaylistContentStore(
+     )
+ 
+     private suspend fun needsNetworkBootstrap(playlistId: String): Boolean =
+-        database.categoryDao().countForPlaylist(playlistId) == 0
++        syncState.getBoolean(syncStateKey(playlistId), false) ||
++            database.categoryDao().countForPlaylist(playlistId) == 0
++
++    suspend fun livePage(
++        playlistId: String,
++        categoryId: String,
++        limit: Int,
++        offset: Int = 0,
++    ): List<LiveStreamWithCategory> = database.liveStreamDao()
++        .pageByCategory(playlistId, categoryId, limit, offset)
++
++    suspend fun moviePage(
++        playlistId: String,
++        categoryId: String,
++        limit: Int,
++        offset: Int = 0,
++    ): List<VodStreamWithCategory> = database.vodStreamDao()
++        .pageByCategory(playlistId, categoryId, limit, offset)
++
++    suspend fun seriesPage(
++        playlistId: String,
++        categoryId: String,
++        limit: Int,
++        offset: Int = 0,
++    ): List<SeriesWithCategory> = database.seriesDao()
++        .pageByCategory(playlistId, categoryId, limit, offset)
++
++    data class CatalogSearchResults(
++        val live: List<LiveStreamWithCategory>,
++        val movies: List<VodStreamWithCategory>,
++        val series: List<SeriesWithCategory>,
++    )
++
++    suspend fun searchCatalog(
++        playlistId: String,
++        query: String,
++        limitPerType: Int = 60,
++    ): CatalogSearchResults {
++        val trimmed = query.trim()
++        if (trimmed.isEmpty()) return CatalogSearchResults(emptyList(), emptyList(), emptyList())
++        return CatalogSearchResults(
++            live = database.liveStreamDao().search(playlistId, trimmed, limitPerType),
++            movies = database.vodStreamDao().search(playlistId, trimmed, limitPerType),
++            series = database.seriesDao().search(playlistId, trimmed, limitPerType),
++        )
++    }
+ 
+     /**
+      * Snapshot of catalog-row counts for a single playlist. iOS
+@@ -288,20 +395,11 @@ class PlaylistContentStore(
+         // Network fetches first, outside the transaction — long-running I/O
+         // and Room write transactions don't mix.
+         progress(appContext.getString(R.string.sync_categories))
+-        val (liveCats, vodCats, seriesCats) = kotlinx.coroutines.coroutineScope {
+-            val live = async { api.getLiveCategories() }
+-            val vod = async { api.getVODCategories() }
+-            val series = async { api.getSeriesCategories() }
+-            Triple(live.await(), vod.await(), series.await())
+-        }
+-
+-        progress(appContext.getString(R.string.sync_catalog_content))
+-        val (liveStreamsApi, vodsApi, seriesApi) = kotlinx.coroutines.coroutineScope {
+-            val live = async { api.getLiveStreams() }
+-            val vod = async { api.getVODStreams() }
+-            val series = async { api.getSeries() }
+-            Triple(live.await(), vod.await(), series.await())
+-        }
++        // Category lists are small, but fetching them sequentially avoids
++        // three response buffers competing with the database on low-RAM TVs.
++        val liveCats = api.getLiveCategories()
++        val vodCats = api.getVODCategories()
++        val seriesCats = api.getSeriesCategories()
+ 
+         val filterAdult = playlist.filterAdultContent
+         val adultLiveCatIds = if (filterAdult) AdultContentFilter.adultCategoryIds(liveCats) else emptySet()
+@@ -314,11 +412,26 @@ class PlaylistContentStore(
+             addAll(mapCategoryRows(seriesCats, type = "series", playlistId = pid, filterAdult = filterAdult))
+         }
+ 
+-        val liveRows = liveStreamsApi
+-            .filterIndexed { _, stream ->
+-                !filterAdult || !AdultContentFilter.isAdultLiveStream(stream, adultLiveCatIds)
+-            }
+-            .mapIndexed { index, stream ->
++        progress(appContext.getString(R.string.sync_persisting))
++        syncState.edit().putBoolean(syncStateKey(pid), true).commit()
++        database.withTransaction {
++            // DELETE order matters when foreign keys are on: children first.
++            database.liveStreamDao().deleteByPlaylist(pid)
++            database.vodStreamDao().deleteByPlaylist(pid)
++            database.seriesDao().deleteByPlaylist(pid)
++            database.categoryDao().deleteByPlaylist(pid)
++
++            database.categoryDao().upsertAll(categoryRows)
++        }
++
++        progress(appContext.getString(R.string.sync_catalog_content))
++        var liveIndex = 0
++        api.streamLiveStreams(SYNC_CHUNK_SIZE) { streams ->
++            val rows = streams.mapNotNull { stream ->
++                val index = liveIndex++
++                if (filterAdult && AdultContentFilter.isAdultLiveStream(stream, adultLiveCatIds)) {
++                    return@mapNotNull null
++                }
+                 LiveStreamEntity(
+                     streamId = stream.streamId ?: 0,
+                     name = stream.name ?: appContext.getString(R.string.common_unnamed),
+@@ -329,12 +442,16 @@ class PlaylistContentStore(
+                     playlistId = pid,
+                 )
+             }
++            if (rows.isNotEmpty()) database.liveStreamDao().upsertAll(rows)
++        }
+ 
+-        val vodRows = vodsApi
+-            .filterIndexed { _, stream ->
+-                !filterAdult || !AdultContentFilter.isAdultVODStream(stream, adultVodCatIds)
+-            }
+-            .mapIndexed { index, stream ->
++        var vodIndex = 0
++        api.streamVODStreams(SYNC_CHUNK_SIZE) { streams ->
++            val rows = streams.mapNotNull { stream ->
++                val index = vodIndex++
++                if (filterAdult && AdultContentFilter.isAdultVODStream(stream, adultVodCatIds)) {
++                    return@mapNotNull null
++                }
+                 VodStreamEntity(
+                     streamId = stream.streamId ?: 0,
+                     name = stream.name ?: appContext.getString(R.string.common_unnamed),
+@@ -347,44 +464,37 @@ class PlaylistContentStore(
+                     added = stream.added,
+                 )
+             }
++            if (rows.isNotEmpty()) database.vodStreamDao().upsertAll(rows)
++        }
+ 
+-        val seriesRows = seriesApi
+-            .filterIndexed { _, s ->
+-                !filterAdult || s.categoryId?.let { it !in adultSeriesCatIds } ?: true
+-            }
+-            .mapIndexed { index, s ->
++        var seriesIndex = 0
++        api.streamSeries(SYNC_CHUNK_SIZE) { items ->
++            val rows = items.mapNotNull { series ->
++                val index = seriesIndex++
++                if (filterAdult && series.categoryId?.let { it in adultSeriesCatIds } == true) {
++                    return@mapNotNull null
++                }
+                 SeriesEntity(
+-                    seriesId = s.seriesId ?: 0,
+-                    name = s.name ?: appContext.getString(R.string.common_unnamed),
+-                    cover = s.cover,
+-                    plot = s.plot,
+-                    genre = s.genre,
+-                    rating = s.rating,
+-                    categoryId = s.categoryId,
++                    seriesId = series.seriesId ?: 0,
++                    name = series.name ?: appContext.getString(R.string.common_unnamed),
++                    cover = series.cover,
++                    plot = series.plot,
++                    genre = series.genre,
++                    rating = series.rating,
++                    categoryId = series.categoryId,
+                     sortIndex = index,
+                     seasonsLoaded = false,
+                     playlistId = pid,
+-                    cast = s.cast,
+-                    director = s.director,
+-                    releaseDate = s.releaseDate,
+-                    lastModified = s.lastModified,
+-                    youtubeTrailer = s.youtubeTrailer,
++                    cast = series.cast,
++                    director = series.director,
++                    releaseDate = series.releaseDate,
++                    lastModified = series.lastModified,
++                    youtubeTrailer = series.youtubeTrailer,
+                 )
+             }
+-
+-        progress(appContext.getString(R.string.sync_persisting))
+-        database.withTransaction {
+-            // DELETE order matters when foreign keys are on: children first.
+-            database.liveStreamDao().deleteByPlaylist(pid)
+-            database.vodStreamDao().deleteByPlaylist(pid)
+-            database.seriesDao().deleteByPlaylist(pid)
+-            database.categoryDao().deleteByPlaylist(pid)
+-
+-            database.categoryDao().upsertAll(categoryRows)
+-            database.liveStreamDao().upsertAll(liveRows)
+-            database.vodStreamDao().upsertAll(vodRows)
+-            database.seriesDao().upsertAll(seriesRows)
++            if (rows.isNotEmpty()) database.seriesDao().upsertAll(rows)
+         }
++        syncState.edit().putBoolean(syncStateKey(pid), false).commit()
+     }
+ 
+     private fun mapCategoryRows(
+@@ -409,5 +519,13 @@ class PlaylistContentStore(
+ 
+     companion object {
+         private const val TAG = "PlaylistContentStore"
++        private const val SYNC_STATE_PREFS = "catalog_sync_state"
++        private const val SYNC_CHUNK_SIZE = 250
++        private const val TV_HOME_RECENT_LIMIT = 40
++        private const val TV_HOME_RATED_LIMIT = 30
++        private const val TV_HOME_MOVIE_LIMIT = 64
++        private const val TV_HOME_SERIES_LIMIT = 32
+     }
++
++    private fun syncStateKey(playlistId: String) = "in_progress:$playlistId"
+ }
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/AppDatabase.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/AppDatabase.kt
+index 630efa7..3f7727e 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/AppDatabase.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/AppDatabase.kt
+@@ -4,6 +4,8 @@ import android.content.Context
+ import androidx.room.Database
+ import androidx.room.Room
+ import androidx.room.RoomDatabase
++import androidx.room.migration.Migration
++import androidx.sqlite.db.SupportSQLiteDatabase
+ import dev.android.anotheriptvplayer.model.Playlist
+ 
+ /**
+@@ -32,7 +34,7 @@ import dev.android.anotheriptvplayer.model.Playlist
+         M3uFavoriteEntity::class,
+         DownloadedItemEntity::class,
+     ],
+-    version = 1,
++    version = 2,
+     exportSchema = true,
+ )
+ abstract class AppDatabase : RoomDatabase() {
+@@ -61,6 +63,25 @@ abstract class AppDatabase : RoomDatabase() {
+         }
+ 
+         private fun build(context: Context): AppDatabase =
+-            Room.databaseBuilder(context, AppDatabase::class.java, DB_NAME).build()
++            Room.databaseBuilder(context, AppDatabase::class.java, DB_NAME)
++                .addMigrations(MIGRATION_1_2)
++                .build()
++
++        private val MIGRATION_1_2 = object : Migration(1, 2) {
++            override fun migrate(db: SupportSQLiteDatabase) {
++                db.execSQL(
++                    "CREATE INDEX IF NOT EXISTS `idx_liveStream_playlist_category_sort` " +
++                        "ON `liveStream` (`playlistId`, `categoryId`, `sortIndex`)",
++                )
++                db.execSQL(
++                    "CREATE INDEX IF NOT EXISTS `idx_vodStream_playlist_category_sort` " +
++                        "ON `vodStream` (`playlistId`, `categoryId`, `sortIndex`)",
++                )
++                db.execSQL(
++                    "CREATE INDEX IF NOT EXISTS `idx_series_playlist_category_sort` " +
++                        "ON `series` (`playlistId`, `categoryId`, `sortIndex`)",
++                )
++            }
++        }
+     }
+ }
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/Entities.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/Entities.kt
+index 00b98ce..04dafb0 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/Entities.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/Entities.kt
+@@ -47,7 +47,13 @@ data class CategoryEntity(
+             onDelete = ForeignKey.CASCADE,
+         ),
+     ],
+-    indices = [Index(value = ["playlistId", "sortIndex"], name = "idx_liveStream_playlist_sort")],
++    indices = [
++        Index(value = ["playlistId", "sortIndex"], name = "idx_liveStream_playlist_sort"),
++        Index(
++            value = ["playlistId", "categoryId", "sortIndex"],
++            name = "idx_liveStream_playlist_category_sort",
++        ),
++    ],
+ )
+ data class LiveStreamEntity(
+     val streamId: Int,
+@@ -73,6 +79,10 @@ data class LiveStreamEntity(
+     indices = [
+         Index(value = ["playlistId", "sortIndex"], name = "idx_vodStream_playlist_sort"),
+         Index(value = ["playlistId", "added"], name = "idx_vodStream_playlist_added"),
++        Index(
++            value = ["playlistId", "categoryId", "sortIndex"],
++            name = "idx_vodStream_playlist_category_sort",
++        ),
+     ],
+ )
+ data class VodStreamEntity(
+@@ -114,6 +124,10 @@ data class VodStreamEntity(
+     indices = [
+         Index(value = ["playlistId", "sortIndex"], name = "idx_series_playlist_sort"),
+         Index(value = ["playlistId", "lastModified"], name = "idx_series_playlist_lastModified"),
++        Index(
++            value = ["playlistId", "categoryId", "sortIndex"],
++            name = "idx_series_playlist_category_sort",
++        ),
+     ],
+ )
+ data class SeriesEntity(
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/LiveStreamDao.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/LiveStreamDao.kt
+index 06a00c3..cde8179 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/LiveStreamDao.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/LiveStreamDao.kt
+@@ -28,6 +28,41 @@ interface LiveStreamDao {
+     )
+     suspend fun getWithCategory(playlistId: String): List<LiveStreamWithCategory>
+ 
++    @Query(
++        """
++        SELECT liveStream.*, category.name AS categoryName
++        FROM liveStream
++        JOIN category ON liveStream.categoryId = category.id
++                     AND liveStream.playlistId = category.playlistId
++                     AND category.type = 'live'
++        WHERE liveStream.playlistId = :playlistId
++          AND liveStream.categoryId = :categoryId
++        ORDER BY liveStream.sortIndex
++        LIMIT :limit OFFSET :offset
++        """
++    )
++    suspend fun pageByCategory(
++        playlistId: String,
++        categoryId: String,
++        limit: Int,
++        offset: Int,
++    ): List<LiveStreamWithCategory>
++
++    @Query(
++        """
++        SELECT liveStream.*, COALESCE(category.name, '') AS categoryName
++        FROM liveStream
++        LEFT JOIN category ON liveStream.categoryId = category.id
++                          AND liveStream.playlistId = category.playlistId
++                          AND category.type = 'live'
++        WHERE liveStream.playlistId = :playlistId
++          AND liveStream.name LIKE '%' || :query || '%' COLLATE NOCASE
++        ORDER BY liveStream.sortIndex
++        LIMIT :limit
++        """
++    )
++    suspend fun search(playlistId: String, query: String, limit: Int): List<LiveStreamWithCategory>
++
+     @Query(
+         """
+         SELECT * FROM liveStream
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/SeriesDao.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/SeriesDao.kt
+index b659b05..828b233 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/SeriesDao.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/SeriesDao.kt
+@@ -32,6 +32,60 @@ interface SeriesDao {
+     )
+     suspend fun getWithCategory(playlistId: String): List<SeriesWithCategory>
+ 
++    @Query(
++        """
++        SELECT series.*, category.name AS categoryName
++        FROM series
++        JOIN category ON series.categoryId = category.id
++                     AND series.playlistId = category.playlistId
++                     AND category.type = 'series'
++        WHERE series.playlistId = :playlistId
++          AND series.categoryId = :categoryId
++        ORDER BY series.sortIndex
++        LIMIT :limit OFFSET :offset
++        """
++    )
++    suspend fun pageByCategory(
++        playlistId: String,
++        categoryId: String,
++        limit: Int,
++        offset: Int,
++    ): List<SeriesWithCategory>
++
++    @Query(
++        """
++        SELECT series.*, COALESCE(category.name, '') AS categoryName
++        FROM series
++        LEFT JOIN category ON series.categoryId = category.id
++                          AND series.playlistId = category.playlistId
++                          AND category.type = 'series'
++        WHERE series.playlistId = :playlistId
++        ORDER BY CAST(COALESCE(series.lastModified, '0') AS INTEGER) DESC, series.sortIndex
++        LIMIT :limit
++        """
++    )
++    suspend fun recentlyUpdated(playlistId: String, limit: Int = 40): List<SeriesWithCategory>
++
++    @Query(
++        """
++        SELECT series.*, COALESCE(category.name, '') AS categoryName
++        FROM series
++        LEFT JOIN category ON series.categoryId = category.id
++                          AND series.playlistId = category.playlistId
++                          AND category.type = 'series'
++        WHERE series.playlistId = :playlistId
++          AND (
++            series.name LIKE '%' || :query || '%' COLLATE NOCASE OR
++            COALESCE(series.cast, '') LIKE '%' || :query || '%' COLLATE NOCASE OR
++            COALESCE(series.director, '') LIKE '%' || :query || '%' COLLATE NOCASE OR
++            COALESCE(series.genre, '') LIKE '%' || :query || '%' COLLATE NOCASE
++          )
++        ORDER BY CAST(COALESCE(series.rating, '0') AS REAL) DESC, series.sortIndex
++        LIMIT :limit
++        """
++    )
++    suspend fun search(playlistId: String, query: String, limit: Int): List<SeriesWithCategory>
++
+     /** Reactive read for the detail screen — re-emits when metadata fills in. */
+     @Query("SELECT * FROM series WHERE seriesId = :seriesId AND playlistId = :playlistId LIMIT 1")
+     fun observeById(seriesId: Int, playlistId: String): Flow<SeriesEntity?>
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/VodStreamDao.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/VodStreamDao.kt
+index 2ddaf3d..5e7a58c 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/VodStreamDao.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/local/VodStreamDao.kt
+@@ -28,6 +28,26 @@ interface VodStreamDao {
+     )
+     suspend fun getWithCategory(playlistId: String): List<VodStreamWithCategory>
+ 
++    @Query(
++        """
++        SELECT vodStream.*, category.name AS categoryName
++        FROM vodStream
++        JOIN category ON vodStream.categoryId = category.id
++                     AND vodStream.playlistId = category.playlistId
++                     AND category.type = 'vod'
++        WHERE vodStream.playlistId = :playlistId
++          AND vodStream.categoryId = :categoryId
++        ORDER BY vodStream.sortIndex
++        LIMIT :limit OFFSET :offset
++        """
++    )
++    suspend fun pageByCategory(
++        playlistId: String,
++        categoryId: String,
++        limit: Int,
++        offset: Int,
++    ): List<VodStreamWithCategory>
++
+     /** Reactive read for the detail screen — emits again when metadata is filled in. */
+     @Query("SELECT * FROM vodStream WHERE streamId = :streamId AND playlistId = :playlistId LIMIT 1")
+     fun observeById(streamId: Int, playlistId: String): Flow<VodStreamEntity?>
+@@ -54,6 +74,41 @@ interface VodStreamDao {
+     )
+     suspend fun recentlyAdded(playlistId: String, limit: Int = 30): List<VodStreamWithCategory>
+ 
++    @Query(
++        """
++        SELECT vodStream.*, COALESCE(category.name, '') AS categoryName
++        FROM vodStream
++        LEFT JOIN category ON vodStream.categoryId = category.id
++                          AND vodStream.playlistId = category.playlistId
++                          AND category.type = 'vod'
++        WHERE vodStream.playlistId = :playlistId
++          AND CAST(COALESCE(vodStream.rating, '0') AS REAL) > 0
++        ORDER BY CAST(vodStream.rating AS REAL) DESC, CAST(COALESCE(vodStream.added, '0') AS INTEGER) DESC
++        LIMIT :limit
++        """
++    )
++    suspend fun topRated(playlistId: String, limit: Int = 30): List<VodStreamWithCategory>
++
++    @Query(
++        """
++        SELECT vodStream.*, COALESCE(category.name, '') AS categoryName
++        FROM vodStream
++        LEFT JOIN category ON vodStream.categoryId = category.id
++                          AND vodStream.playlistId = category.playlistId
++                          AND category.type = 'vod'
++        WHERE vodStream.playlistId = :playlistId
++          AND (
++            vodStream.name LIKE '%' || :query || '%' COLLATE NOCASE OR
++            COALESCE(vodStream.cast, '') LIKE '%' || :query || '%' COLLATE NOCASE OR
++            COALESCE(vodStream.director, '') LIKE '%' || :query || '%' COLLATE NOCASE OR
++            COALESCE(vodStream.genre, '') LIKE '%' || :query || '%' COLLATE NOCASE
++          )
++        ORDER BY CAST(COALESCE(vodStream.rating, '0') AS REAL) DESC, vodStream.sortIndex
++        LIMIT :limit
++        """
++    )
++    suspend fun search(playlistId: String, query: String, limit: Int): List<VodStreamWithCategory>
++
+     /** Single-row update — Room generates UPDATE by composite PK. */
+     @Update
+     suspend fun update(row: VodStreamEntity)
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt
+index 9508aea..bb59a70 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt
+@@ -4,9 +4,11 @@ import android.util.Log
+ import dev.android.anotheriptvplayer.model.Playlist
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.withContext
++import kotlinx.serialization.ExperimentalSerializationApi
+ import kotlinx.serialization.KSerializer
+ import kotlinx.serialization.builtins.ListSerializer
+ import kotlinx.serialization.builtins.serializer
++import kotlinx.serialization.json.DecodeSequenceMode
+ import kotlinx.serialization.json.Json
+ import kotlinx.serialization.json.JsonArray
+ import kotlinx.serialization.json.JsonElement
+@@ -139,6 +141,69 @@ class XtreamApiClient(
+         }
+     }
+ 
++    /**
++     * Streams a large Xtream JSON array without materialising the response,
++     * its JSON tree and the decoded model list at the same time.
++     *
++     * Some providers return tens of thousands of rows. The old code used
++     * `body.string()` followed by a complete [JsonElement] tree which could
++     * briefly require several times the catalogue size in RAM. On Android TV
++     * boxes that is enough to trigger an OOM/restart loop. This decoder keeps
++     * only one JSON element plus a small database-sized chunk in memory.
++     */
++    @OptIn(ExperimentalSerializationApi::class)
++    private suspend fun <T> streamFailableList(
++        action: String,
++        itemSerializer: KSerializer<T>,
++        chunkSize: Int,
++        onChunk: suspend (List<T>) -> Unit,
++    ) = withContext(Dispatchers.IO) {
++        require(chunkSize > 0) { "chunkSize must be positive" }
++
++        val url = buildBaseUrlBuilder()
++            .addQueryParameter("action", action)
++            .build()
++        val request = Request.Builder().url(url).get().build()
++
++        try {
++            client.newCall(request).execute().use { response ->
++                if (!response.isSuccessful) {
++                    throw XtreamException.Server("HTTP ${response.code}")
++                }
++                val body = response.body ?: return@use
++                body.byteStream().use { stream ->
++                    val elements = XtreamJson.decodeToSequence(
++                        stream = stream,
++                        deserializer = JsonElement.serializer(),
++                        format = DecodeSequenceMode.ARRAY_WRAPPED,
++                    )
++                    val chunk = ArrayList<T>(chunkSize)
++                    for (element in elements) {
++                        if (element is JsonNull) continue
++                        val decoded = runCatching {
++                            XtreamJson.decodeFromJsonElement(itemSerializer, element)
++                        }.onFailure {
++                            Log.w(TAG, "Skipping bad item in $action (${it.javaClass.simpleName})")
++                        }.getOrNull() ?: continue
++                        chunk += decoded
++                        if (chunk.size >= chunkSize) {
++                            onChunk(chunk.toList())
++                            chunk.clear()
++                        }
++                    }
++                    if (chunk.isNotEmpty()) onChunk(chunk)
++                }
++            }
++        } catch (e: XtreamException) {
++            throw e
++        } catch (e: IOException) {
++            throw XtreamException.Network(e)
++        } catch (e: Throwable) {
++            Log.w(TAG, "Streaming decode failed for action=$action (${e.javaClass.simpleName})")
++            throw XtreamException.Decoding(e)
++        }
++    }
++
+     // ---- API methods ----
+ 
+     /** Login / verify. Throws [XtreamException.Unauthenticated] if `auth != 1`. */
+@@ -177,6 +242,36 @@ class XtreamApiClient(
+             queryItems = categoryId?.let { mapOf("category_id" to it) } ?: emptyMap(),
+         )
+ 
++    suspend fun streamLiveStreams(
++        chunkSize: Int = 250,
++        onChunk: suspend (List<XtreamLiveStream>) -> Unit,
++    ) = streamFailableList(
++        action = "get_live_streams",
++        itemSerializer = XtreamLiveStream.serializer(),
++        chunkSize = chunkSize,
++        onChunk = onChunk,
++    )
++
++    suspend fun streamVODStreams(
++        chunkSize: Int = 250,
++        onChunk: suspend (List<XtreamVODStream>) -> Unit,
++    ) = streamFailableList(
++        action = "get_vod_streams",
++        itemSerializer = XtreamVODStream.serializer(),
++        chunkSize = chunkSize,
++        onChunk = onChunk,
++    )
++
++    suspend fun streamSeries(
++        chunkSize: Int = 250,
++        onChunk: suspend (List<XtreamSeries>) -> Unit,
++    ) = streamFailableList(
++        action = "get_series",
++        itemSerializer = XtreamSeries.serializer(),
++        chunkSize = chunkSize,
++        onChunk = onChunk,
++    )
++
+     suspend fun getSeriesInfo(seriesId: Int): XtreamSeriesInfoResponse = fetch(
+         action = "get_series_info",
+         queryItems = mapOf("series_id" to seriesId.toString()),
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/player/MPVPlayer.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/player/MPVPlayer.kt
+index fc1556c..9ebf0e4 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/player/MPVPlayer.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/player/MPVPlayer.kt
+@@ -149,6 +149,9 @@ class MPVPlayer(context: Context) {
+      * iOS doesn't hit this race because `vo=libmpv` is FBO-based and lazy.
+      */
+     private var pendingLoad: PendingLoad? = null
++    private var currentLoad: PendingLoad? = null
++    private var liveReconnectAttempts = 0
++    private var liveReconnectFuture: ScheduledFuture<*>? = null
+ 
+     private data class PendingLoad(
+         val url: String,
+@@ -181,6 +184,7 @@ class MPVPlayer(context: Context) {
+             if (reason == MPVLib.EndFileReason.ERROR) {
+                 publishEndFileFailureMessage(error)
+             }
++            scheduleLiveReconnectIfNeeded()
+         }
+ 
+         override fun onEvent(eventId: Int) {
+@@ -194,6 +198,8 @@ class MPVPlayer(context: Context) {
+                 MPVLib.Event.PLAYBACK_RESTART -> {
+                     playbackPipelinePrimed = true
+                     cancelLoadTimeoutWatchdog()
++                    cancelLiveReconnect()
++                    liveReconnectAttempts = 0
+                     // Loading-phase ffmpeg/http warnings sometimes fire after the pipeline
+                     // is already serving frames; reset to avoid a sticky overlay.
+                     clearPlaybackFailure()
+@@ -307,6 +313,9 @@ class MPVPlayer(context: Context) {
+         liveLowLatency: Boolean = false,
+     ) = onMpvQueue {
+         val req = PendingLoad(url, play, startSeconds, liveLowLatency)
++        cancelLiveReconnect()
++        liveReconnectAttempts = 0
++        currentLoad = req
+         if (!hasSurface) {
+             // Defer: mpv will be told to loadfile the moment the SurfaceView
+             // hands us its Surface. Without this guard `gpu-context=android`
+@@ -320,6 +329,7 @@ class MPVPlayer(context: Context) {
+     }
+ 
+     private fun applyLoadNow(req: PendingLoad) {
++        currentLoad = req
+         clearPlaybackFailure()
+         cancelLoadTimeoutWatchdog()
+         playbackPipelinePrimed = false
+@@ -465,6 +475,8 @@ class MPVPlayer(context: Context) {
+     fun dispose() {
+         if (!isDisposed.compareAndSet(false, true)) return
+         cancelLoadTimeoutWatchdog()
++        cancelLiveReconnect()
++        currentLoad = null
+         // Hand-off to the mpv queue so any in-flight `loadfile`/`seek` queued
+         // by the UI completes before we destroy the handle; iOS does the same.
+         mpvQueue.execute {
+@@ -516,13 +528,17 @@ class MPVPlayer(context: Context) {
+             "pause" to "yes",
+             "keep-open" to "yes",
+             "audio-display" to "no",
+-            // Log + END_FILE friendly timeout (matches iOS).
+-            "network-timeout" to "14",
++            // A transient provider or Wi-Fi pause must not kill the stream
++            // before the cache has a chance to recover.
++            "network-timeout" to "24",
+             // Cheap bilinear: invisible on phone DPI, ~2× cheaper than spline36.
+             "scale" to "bilinear",
+             "dscale" to "bilinear",
+             "cache" to "yes",
+             "cache-on-disk" to "yes",
++            "cache-pause" to "yes",
++            "cache-pause-initial" to "yes",
++            "cache-pause-wait" to "4",
+             "hr-seek" to "default",
+             "hr-seek-framedrop" to "yes",
+             "vid" to "auto",
+@@ -539,23 +555,54 @@ class MPVPlayer(context: Context) {
+         }
+     }
+ 
+-    /** Mirror of iOS `applyStreamBufferPolicy`; tighter buffers for live IPTV. */
++    /**
++     * Stability-first profiles for TV playback. A few extra seconds before
++     * the first frame are preferable to recurring pauses once viewing starts.
++     */
+     private fun applyStreamBufferPolicy(liveLowLatency: Boolean) {
+         if (liveLowLatency) {
+             MPVLib.setPropertyString(handle, "cache", "yes")
+             MPVLib.setPropertyString(handle, "cache-on-disk", "no")
+-            MPVLib.setPropertyString(handle, "cache-secs", "5")
+-            MPVLib.setPropertyString(handle, "demuxer-readahead-secs", "2")
+-            MPVLib.setPropertyString(handle, "demuxer-max-bytes", "${4 * 1024 * 1024}")
+-            MPVLib.setPropertyString(handle, "demuxer-max-back-bytes", "${512 * 1024}")
++            MPVLib.setPropertyString(handle, "cache-pause", "yes")
++            MPVLib.setPropertyString(handle, "cache-pause-initial", "yes")
++            MPVLib.setPropertyString(handle, "cache-pause-wait", "4")
++            MPVLib.setPropertyString(handle, "cache-secs", "30")
++            MPVLib.setPropertyString(handle, "demuxer-readahead-secs", "20")
++            MPVLib.setPropertyString(handle, "demuxer-max-bytes", "${32 * 1024 * 1024}")
++            MPVLib.setPropertyString(handle, "demuxer-max-back-bytes", "${1 * 1024 * 1024}")
+         } else {
+             MPVLib.setPropertyString(handle, "cache", "yes")
+             MPVLib.setPropertyString(handle, "cache-on-disk", "yes")
++            MPVLib.setPropertyString(handle, "cache-pause", "yes")
++            MPVLib.setPropertyString(handle, "cache-pause-initial", "yes")
++            MPVLib.setPropertyString(handle, "cache-pause-wait", "6")
+             MPVLib.setPropertyString(handle, "cache-secs", "300")
+-            MPVLib.setPropertyString(handle, "demuxer-readahead-secs", "10")
+-            MPVLib.setPropertyString(handle, "demuxer-max-bytes", "${32 * 1024 * 1024}")
+-            MPVLib.setPropertyString(handle, "demuxer-max-back-bytes", "${32 * 1024 * 1024}")
++            MPVLib.setPropertyString(handle, "demuxer-readahead-secs", "30")
++            MPVLib.setPropertyString(handle, "demuxer-max-bytes", "${64 * 1024 * 1024}")
++            MPVLib.setPropertyString(handle, "demuxer-max-back-bytes", "${8 * 1024 * 1024}")
++        }
++    }
++
++    /** Re-open a live URL after a provider-side socket close or brief drop. */
++    private fun scheduleLiveReconnectIfNeeded() {
++        val request = currentLoad ?: return
++        if (!request.liveLowLatency || isDisposed.get() || liveReconnectAttempts >= MAX_LIVE_RECONNECTS) {
++            return
+         }
++        cancelLiveReconnect()
++        val attempt = liveReconnectAttempts++
++        val delaySeconds = 1L shl attempt.coerceAtMost(3)
++        liveReconnectFuture = mpvQueue.schedule({
++            if (!isDisposed.get() && hasSurface && currentLoad == request) {
++                Log.i(TAG, "Reconnecting live stream (attempt=${attempt + 1})")
++                applyLoadNow(request)
++            }
++        }, delaySeconds, TimeUnit.SECONDS)
++    }
++
++    private fun cancelLiveReconnect() {
++        liveReconnectFuture?.cancel(false)
++        liveReconnectFuture = null
+     }
+ 
+     // ---------------------------------------------------------------------
+@@ -785,7 +832,7 @@ class MPVPlayer(context: Context) {
+             if (_playbackFailureMessage.value == null) {
+                 _playbackFailureMessage.value = appContext.getString(R.string.error_timeout)
+             }
+-        }, 16, TimeUnit.SECONDS)
++        }, 35, TimeUnit.SECONDS)
+     }
+ 
+     // ---------------------------------------------------------------------
+@@ -810,6 +857,7 @@ class MPVPlayer(context: Context) {
+     companion object {
+         private const val TAG = "MPVPlayer"
+         private const val RECENT_LOG_MAX = 80
++        private const val MAX_LIVE_RECONNECTS = 4
+         private val CREDENTIAL_QUERY_REGEX =
+             Regex("""(?i)\b(username|password)=([^&\s]+)""")
+         private val STREAM_URL_REGEX =
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/AppNavigation.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/AppNavigation.kt
+index 3629c70..1854912 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/AppNavigation.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/AppNavigation.kt
+@@ -223,15 +223,6 @@ fun AppNavigation() {
+                             onOpenSeries = { seriesId ->
+                                 navController.navigate(Routes.series(id, seriesId))
+                             },
+-                            onOpenLiveCategory = { catId ->
+-                                navController.navigate(Routes.liveCategory(id, catId))
+-                            },
+-                            onOpenVodCategory = { catId ->
+-                                navController.navigate(Routes.vodCategory(id, catId))
+-                            },
+-                            onOpenSeriesCategory = { catId ->
+-                                navController.navigate(Routes.seriesCategory(id, catId))
+-                            },
+                             onPlayLive = { streamId ->
+                                 navController.navigate(Routes.playerLive(id, streamId))
+                             },
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/search/SearchScreen.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/search/SearchScreen.kt
+index bc67705..3a770be 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/search/SearchScreen.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/search/SearchScreen.kt
+@@ -41,7 +41,6 @@ import androidx.compose.material3.Text
+ import androidx.compose.material3.TopAppBar
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.LaunchedEffect
+-import androidx.compose.runtime.derivedStateOf
+ import androidx.compose.runtime.getValue
+ import androidx.compose.runtime.mutableStateOf
+ import androidx.compose.runtime.remember
+@@ -64,6 +63,7 @@ import dev.android.anotheriptvplayer.data.CatalogTextSearch.normalize
+ import dev.android.anotheriptvplayer.model.PlaylistKind
+ import dev.android.anotheriptvplayer.ui.LocalPlaylistContentStore
+ import dev.android.anotheriptvplayer.ui.LocalPlaylistRepository
++import kotlinx.coroutines.delay
+ 
+ /**
+  * Global search across the active playlist. Mirrors iOS `SearchView`.
+@@ -93,6 +93,7 @@ fun SearchScreen(
+ 
+     var query by remember { mutableStateOf("") }
+     var kind by remember { mutableStateOf<PlaylistKind?>(null) }
++    var xtreamResults by remember { mutableStateOf<List<SearchHit>>(emptyList()) }
+ 
+     val voiceIntent = remember {
+         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+@@ -133,66 +134,42 @@ fun SearchScreen(
+         kind = repository.find(playlistId)?.kind
+     }
+ 
+-    val xtreamLive by xtreamStore.liveStreams.collectAsState()
+-    val xtreamVod by xtreamStore.vodStreams.collectAsState()
+-    val xtreamSeries by xtreamStore.seriesItems.collectAsState()
+     val m3uChannels by m3uStore.channels.collectAsState()
+ 
+-    val resultsState = remember(query, kind, xtreamLive, xtreamVod, xtreamSeries, m3uChannels) {
+-        derivedStateOf<List<SearchHit>> {
+-            if (query.isBlank()) emptyList()
+-            else when (kind) {
+-                PlaylistKind.M3U -> m3uChannels
+-                    .filter { CatalogTextSearch.matches(query, it.name) }
+-                    .sortedWith(relevance(query) { it.name })
+-                    .take(200)
+-                    .map { SearchHit.M3u(it.id, it.name, it.tvgLogo, it.groupTitle) }
+-                PlaylistKind.XTREAM -> {
+-                    val list = mutableListOf<SearchHit>()
+-                    list += xtreamLive
+-                        .filter { CatalogTextSearch.matches(query, it.stream.name) }
+-                        .sortedWith(relevance(query) { it.stream.name })
+-                        .take(80)
+-                        .map { SearchHit.Live(it.stream.streamId, it.stream.name, it.stream.streamIcon, it.categoryName) }
+-                    list += xtreamVod
+-                        .filter { row ->
+-                            CatalogTextSearch.matches(
+-                                query,
+-                                listOfNotNull(
+-                                    row.stream.name,
+-                                    row.stream.cast,
+-                                    row.stream.director,
+-                                    row.stream.genre,
+-                                    row.stream.plot,
+-                                ).joinToString(" "),
+-                            )
+-                        }
+-                        .sortedWith(relevance(query) { it.stream.name })
+-                        .take(80)
+-                        .map { SearchHit.Movie(it.stream.streamId, it.stream.name, it.stream.streamIcon, it.categoryName) }
+-                    list += xtreamSeries
+-                        .filter { row ->
+-                            CatalogTextSearch.matches(
+-                                query,
+-                                listOfNotNull(
+-                                    row.series.name,
+-                                    row.series.cast,
+-                                    row.series.director,
+-                                    row.series.genre,
+-                                    row.series.plot,
+-                                ).joinToString(" "),
+-                            )
+-                        }
+-                        .sortedWith(relevance(query) { it.series.name })
+-                        .take(80)
+-                        .map { SearchHit.Series(it.series.seriesId, it.series.name, it.series.cover, it.categoryName) }
+-                    list
+-                }
+-                else -> emptyList()
+-            }
++    LaunchedEffect(query, kind, playlistId) {
++        if (kind != PlaylistKind.XTREAM || query.trim().length < 2) {
++            xtreamResults = emptyList()
++            return@LaunchedEffect
++        }
++        delay(250)
++        val found = xtreamStore.searchCatalog(playlistId, query, limitPerType = 80)
++        val list = ArrayList<SearchHit>(found.live.size + found.movies.size + found.series.size)
++        list += found.live
++            .sortedWith(relevance(query) { it.stream.name })
++            .map { SearchHit.Live(it.stream.streamId, it.stream.name, it.stream.streamIcon, it.categoryName) }
++        list += found.movies
++            .sortedWith(relevance(query) { it.stream.name })
++            .map { SearchHit.Movie(it.stream.streamId, it.stream.name, it.stream.streamIcon, it.categoryName) }
++        list += found.series
++            .sortedWith(relevance(query) { it.series.name })
++            .map { SearchHit.Series(it.series.seriesId, it.series.name, it.series.cover, it.categoryName) }
++        xtreamResults = list
++    }
++
++    val results = remember(query, kind, m3uChannels, xtreamResults) {
++        if (query.isBlank()) emptyList()
++        else when (kind) {
++            PlaylistKind.M3U -> m3uChannels
++                .asSequence()
++                .filter { CatalogTextSearch.matches(query, it.name) }
++                .sortedWith(relevance(query) { it.name })
++                .take(200)
++                .map { SearchHit.M3u(it.id, it.name, it.tvgLogo, it.groupTitle) }
++                .toList()
++            PlaylistKind.XTREAM -> xtreamResults
++            else -> emptyList()
+         }
+     }
+-    val results = resultsState.value
+ 
+     Scaffold(
+         topBar = {
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/PremiumTvDashboardScreen.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/PremiumTvDashboardScreen.kt
+index 46470df..b77755d 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/PremiumTvDashboardScreen.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/PremiumTvDashboardScreen.kt
+@@ -17,6 +17,7 @@ import androidx.compose.material3.Text
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.LaunchedEffect
+ import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableIntStateOf
+ import androidx.compose.runtime.mutableStateOf
+ import androidx.compose.runtime.remember
+ import androidx.compose.runtime.rememberCoroutineScope
+@@ -30,9 +31,11 @@ import androidx.compose.ui.unit.sp
+ import androidx.lifecycle.compose.collectAsStateWithLifecycle
+ import dev.android.anotheriptvplayer.AnotherIptvPlayerApp
+ import dev.android.anotheriptvplayer.R
+-import dev.android.anotheriptvplayer.data.CatalogRefreshPolicy
+ import dev.android.anotheriptvplayer.data.EpisodeUpdateDetector
+ import dev.android.anotheriptvplayer.data.EpisodeUpdateReadStore
++import dev.android.anotheriptvplayer.data.local.LiveStreamWithCategory
++import dev.android.anotheriptvplayer.data.local.SeriesWithCategory
++import dev.android.anotheriptvplayer.data.local.VodStreamWithCategory
+ import dev.android.anotheriptvplayer.model.Playlist
+ import dev.android.anotheriptvplayer.ui.LocalHiddenCategoryStore
+ import dev.android.anotheriptvplayer.ui.LocalPlaylistContentStore
+@@ -55,9 +58,6 @@ fun PremiumTvDashboardScreen(
+     onOpenMovie: (Int) -> Unit,
+     onPlayMovie: (Int) -> Unit,
+     onOpenSeries: (Int) -> Unit,
+-    onOpenLiveCategory: (String) -> Unit,
+-    onOpenVodCategory: (String) -> Unit,
+-    onOpenSeriesCategory: (String) -> Unit,
+     onPlayLive: (Int) -> Unit,
+     onOpenDownloads: () -> Unit,
+     onOpenHistory: () -> Unit,
+@@ -76,9 +76,14 @@ fun PremiumTvDashboardScreen(
+     var destination by remember { mutableStateOf(TvDestination.Home) }
+     var settingsVisible by remember { mutableStateOf(false) }
+     var notificationPanelVisible by remember { mutableStateOf(false) }
+-    var isAutoRefreshing by remember { mutableStateOf(false) }
++    var selectedCategoryId by remember { mutableStateOf<String?>(null) }
++    var catalogLimit by remember { mutableIntStateOf(TV_CATALOG_PAGE_SIZE) }
++    var catalogLoading by remember { mutableStateOf(false) }
++    var catalogHasMore by remember { mutableStateOf(false) }
++    var catalogLiveRows by remember { mutableStateOf<List<LiveStreamWithCategory>>(emptyList()) }
++    var catalogMovieRows by remember { mutableStateOf<List<VodStreamWithCategory>>(emptyList()) }
++    var catalogSeriesRows by remember { mutableStateOf<List<SeriesWithCategory>>(emptyList()) }
+ 
+-    val refreshPolicy = remember(context) { CatalogRefreshPolicy(context) }
+     val updateReadStore = remember(context) { EpisodeUpdateReadStore(context) }
+     var readSignatures by remember(playlistId) {
+         mutableStateOf(updateReadStore.readSignatures(playlistId))
+@@ -90,9 +95,6 @@ fun PremiumTvDashboardScreen(
+     val liveCategories by contentStore.liveCategories.collectAsStateWithLifecycle()
+     val movieCategories by contentStore.vodCategories.collectAsStateWithLifecycle()
+     val seriesCategories by contentStore.seriesCategories.collectAsStateWithLifecycle()
+-    val liveByCategory by contentStore.liveStreamsByCategoryId.collectAsStateWithLifecycle()
+-    val moviesByCategory by contentStore.vodStreamsByCategoryId.collectAsStateWithLifecycle()
+-    val seriesByCategory by contentStore.seriesItemsByCategoryId.collectAsStateWithLifecycle()
+     val movies by contentStore.vodStreams.collectAsStateWithLifecycle()
+     val series by contentStore.seriesItems.collectAsStateWithLifecycle()
+     val history by app.appDatabaseForDownloads
+@@ -127,21 +129,57 @@ fun PremiumTvDashboardScreen(
+         playlist = resolved
+         if (resolved == null) return@LaunchedEffect
+ 
+-        val hadRefreshBaseline = refreshPolicy.hasBaseline(playlistId)
+-        contentStore.loadPlaylistSuspending(resolved)
++        contentStore.loadPlaylistForTvSuspending(resolved)
++    }
++
++    val activeCategories = when (destination) {
++        TvDestination.Live -> visibleLiveCategories
++        TvDestination.Movies -> visibleMovieCategories
++        TvDestination.Series -> visibleSeriesCategories
++        TvDestination.Home -> emptyList()
++    }
++
++    LaunchedEffect(destination, activeCategories) {
++        if (destination == TvDestination.Home) return@LaunchedEffect
++        val availableIds = activeCategories.asSequence().map { it.id }.toSet()
++        if (selectedCategoryId !in availableIds) {
++            selectedCategoryId = activeCategories.firstOrNull()?.id
++            catalogLimit = TV_CATALOG_PAGE_SIZE
++        }
++    }
+ 
+-        // The bootstrap already fetched the full catalog. Establish a
+-        // baseline rather than downloading it twice on first TV launch.
+-        if (!hadRefreshBaseline) {
+-            refreshPolicy.markRefreshed(playlistId)
+-        } else if (refreshPolicy.shouldRefresh(playlistId)) {
+-            isAutoRefreshing = true
+-            runCatching {
+-                contentStore.syncFromNetworkReplacingLocal(resolved) { }
+-                contentStore.reloadFromDatabase(playlistId)
+-                refreshPolicy.markRefreshed(playlistId)
++    LaunchedEffect(playlistId, destination, selectedCategoryId, catalogLimit) {
++        val categoryId = selectedCategoryId ?: return@LaunchedEffect
++        if (destination == TvDestination.Home) return@LaunchedEffect
++        catalogLoading = true
++        try {
++            val fetchLimit = catalogLimit + 1
++            when (destination) {
++                TvDestination.Live -> {
++                    val rows = contentStore.livePage(playlistId, categoryId, fetchLimit)
++                    catalogLiveRows = rows.take(catalogLimit)
++                    catalogMovieRows = emptyList()
++                    catalogSeriesRows = emptyList()
++                    catalogHasMore = rows.size > catalogLimit
++                }
++                TvDestination.Movies -> {
++                    val rows = contentStore.moviePage(playlistId, categoryId, fetchLimit)
++                    catalogLiveRows = emptyList()
++                    catalogMovieRows = rows.take(catalogLimit)
++                    catalogSeriesRows = emptyList()
++                    catalogHasMore = rows.size > catalogLimit
++                }
++                TvDestination.Series -> {
++                    val rows = contentStore.seriesPage(playlistId, categoryId, fetchLimit)
++                    catalogLiveRows = emptyList()
++                    catalogMovieRows = emptyList()
++                    catalogSeriesRows = rows.take(catalogLimit)
++                    catalogHasMore = rows.size > catalogLimit
++                }
++                TvDestination.Home -> Unit
+             }
+-            isAutoRefreshing = false
++        } finally {
++            catalogLoading = false
+         }
+     }
+ 
+@@ -166,18 +204,18 @@ fun PremiumTvDashboardScreen(
+             ),
+     ) {
+         when {
+-            loadError != null && movies.isEmpty() && series.isEmpty() && liveByCategory.isEmpty() -> {
++            loadError != null && liveCategories.isEmpty() && movieCategories.isEmpty() && seriesCategories.isEmpty() -> {
+                 TvLoadError(
+                     message = loadError ?: stringResource(R.string.error_generic),
+                     onRetry = {
+                         playlist?.let { current ->
+-                            scope.launch { contentStore.loadPlaylistSuspending(current) }
++                            scope.launch { contentStore.loadPlaylistForTvSuspending(current) }
+                         }
+                     },
+                 )
+             }
+ 
+-            isLoading && movies.isEmpty() && series.isEmpty() && liveByCategory.isEmpty() -> {
++            isLoading && liveCategories.isEmpty() && movieCategories.isEmpty() && seriesCategories.isEmpty() -> {
+                 TvLoadingState(message = loadingMessage)
+             }
+ 
+@@ -218,21 +256,20 @@ fun PremiumTvDashboardScreen(
+             }
+ 
+             else -> {
+-                val categories = when (destination) {
+-                    TvDestination.Live -> visibleLiveCategories
+-                    TvDestination.Movies -> visibleMovieCategories
+-                    TvDestination.Series -> visibleSeriesCategories
+-                    TvDestination.Home -> emptyList()
+-                }
+                 TvCatalogScreen(
+                     destination = destination,
+-                    categories = categories,
+-                    liveByCategory = liveByCategory,
+-                    moviesByCategory = moviesByCategory,
+-                    seriesByCategory = seriesByCategory,
+-                    onOpenLiveCategory = onOpenLiveCategory,
+-                    onOpenMovieCategory = onOpenVodCategory,
+-                    onOpenSeriesCategory = onOpenSeriesCategory,
++                    categories = activeCategories,
++                    selectedCategoryId = selectedCategoryId,
++                    liveRows = catalogLiveRows,
++                    movieRows = catalogMovieRows,
++                    seriesRows = catalogSeriesRows,
++                    isLoading = catalogLoading,
++                    hasMore = catalogHasMore,
++                    onSelectCategory = { categoryId ->
++                        selectedCategoryId = categoryId
++                        catalogLimit = TV_CATALOG_PAGE_SIZE
++                    },
++                    onLoadMore = { catalogLimit += TV_CATALOG_PAGE_SIZE },
+                     onPlayLive = onPlayLive,
+                     onOpenMovie = onOpenMovie,
+                     onOpenSeries = onOpenSeries,
+@@ -243,7 +280,7 @@ fun PremiumTvDashboardScreen(
+         TvTopNavigation(
+             destination = destination,
+             unreadCount = unreadCount,
+-            isRefreshing = isAutoRefreshing,
++            isRefreshing = false,
+             onDestination = {
+                 settingsVisible = false
+                 destination = it
+@@ -274,6 +311,8 @@ fun PremiumTvDashboardScreen(
+     }
+ }
+ 
++private const val TV_CATALOG_PAGE_SIZE = 48
++
+ @Composable
+ private fun TvLoadingState(message: String?) {
+     Column(
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvComponents.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvComponents.kt
+index 9a1f6fa..837f201 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvComponents.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvComponents.kt
+@@ -211,6 +211,58 @@ private fun TvNavItem(text: String, selected: Boolean, onClick: () -> Unit) {
+     }
+ }
+ 
++@Composable
++internal fun TvCategoryChip(
++    text: String,
++    selected: Boolean,
++    onClick: () -> Unit,
++    modifier: Modifier = Modifier,
++) {
++    var focused by remember { mutableStateOf(false) }
++    Row(
++        modifier = modifier
++            .onFocusChanged { focused = it.isFocused }
++            .clip(RoundedCornerShape(20.dp))
++            .background(
++                when {
++                    focused -> Color.White
++                    selected -> TvAccent.copy(alpha = 0.88f)
++                    else -> Color.White.copy(alpha = 0.09f)
++                },
++            )
++            .border(
++                BorderStroke(
++                    1.dp,
++                    if (focused || selected) Color.White.copy(alpha = 0.88f)
++                    else Color.White.copy(alpha = 0.12f),
++                ),
++                RoundedCornerShape(20.dp),
++            )
++            .clickable(onClick = onClick)
++            .focusable()
++            .padding(horizontal = 16.dp, vertical = 9.dp),
++        verticalAlignment = Alignment.CenterVertically,
++    ) {
++        if (selected) {
++            Icon(
++                imageVector = Icons.Default.Check,
++                contentDescription = null,
++                tint = if (focused) TvCanvas else Color.White,
++                modifier = Modifier.size(15.dp),
++            )
++            Spacer(Modifier.width(6.dp))
++        }
++        Text(
++            text = text,
++            color = if (focused) TvCanvas else TvTextPrimary,
++            fontSize = 13.sp,
++            fontWeight = FontWeight.SemiBold,
++            maxLines = 1,
++            overflow = TextOverflow.Ellipsis,
++        )
++    }
++}
++
+ @Composable
+ internal fun TvHeaderIcon(
+     icon: ImageVector,
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvHomeScreen.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvHomeScreen.kt
+index b6b89ad..158be37 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvHomeScreen.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvHomeScreen.kt
+@@ -10,15 +10,22 @@ import androidx.compose.foundation.layout.fillMaxSize
+ import androidx.compose.foundation.layout.fillMaxWidth
+ import androidx.compose.foundation.layout.height
+ import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
+ import androidx.compose.foundation.lazy.LazyColumn
+ import androidx.compose.foundation.lazy.LazyRow
+ import androidx.compose.foundation.lazy.items
++import androidx.compose.foundation.lazy.grid.GridCells
++import androidx.compose.foundation.lazy.grid.GridItemSpan
++import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
++import androidx.compose.foundation.lazy.grid.items
++import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.filled.Info
+ import androidx.compose.material.icons.filled.LiveTv
+ import androidx.compose.material.icons.filled.Movie
+ import androidx.compose.material.icons.filled.PlayArrow
+ import androidx.compose.material.icons.filled.Tv
++import androidx.compose.material3.CircularProgressIndicator
+ import androidx.compose.material3.Text
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.remember
+@@ -348,12 +355,14 @@ internal fun SeriesRail(
+ internal fun TvCatalogScreen(
+     destination: TvDestination,
+     categories: List<CategoryEntity>,
+-    liveByCategory: Map<String, List<LiveStreamWithCategory>>,
+-    moviesByCategory: Map<String, List<VodStreamWithCategory>>,
+-    seriesByCategory: Map<String, List<SeriesWithCategory>>,
+-    onOpenLiveCategory: (String) -> Unit,
+-    onOpenMovieCategory: (String) -> Unit,
+-    onOpenSeriesCategory: (String) -> Unit,
++    selectedCategoryId: String?,
++    liveRows: List<LiveStreamWithCategory>,
++    movieRows: List<VodStreamWithCategory>,
++    seriesRows: List<SeriesWithCategory>,
++    isLoading: Boolean,
++    hasMore: Boolean,
++    onSelectCategory: (String) -> Unit,
++    onLoadMore: () -> Unit,
+     onPlayLive: (Int) -> Unit,
+     onOpenMovie: (Int) -> Unit,
+     onOpenSeries: (Int) -> Unit,
+@@ -373,80 +382,129 @@ internal fun TvCatalogScreen(
+         return
+     }
+ 
+-    LazyColumn(
+-        modifier = modifier.fillMaxSize(),
+-        contentPadding = PaddingValues(top = 104.dp, bottom = 60.dp),
+-        verticalArrangement = Arrangement.spacedBy(20.dp),
++    Column(
++        modifier = modifier
++            .fillMaxSize()
++            .padding(top = 86.dp),
+     ) {
+-        item(key = "catalog-title") {
+-            Column(modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)) {
+-                Text(
+-                    text = stringResource(destination.labelRes),
+-                    color = TvTextPrimary,
+-                    fontSize = 34.sp,
+-                    fontWeight = FontWeight.Bold,
+-                )
+-                Text(
+-                    text = stringResource(R.string.tv_catalog_subtitle),
+-                    color = TvTextSecondary,
+-                    fontSize = 13.sp,
+-                    modifier = Modifier.padding(top = 5.dp),
+-                )
++        Row(
++            modifier = Modifier
++                .fillMaxWidth()
++                .height(62.dp),
++            verticalAlignment = Alignment.CenterVertically,
++        ) {
++            Text(
++                text = stringResource(destination.labelRes),
++                color = TvTextSecondary,
++                fontSize = 14.sp,
++                fontWeight = FontWeight.SemiBold,
++                modifier = Modifier.padding(start = 48.dp, end = 16.dp),
++            )
++            LazyRow(
++                contentPadding = PaddingValues(end = 48.dp, top = 8.dp, bottom = 8.dp),
++                horizontalArrangement = Arrangement.spacedBy(9.dp),
++            ) {
++                items(categories, key = { "filter:${destination.name}:${it.id}" }) { category ->
++                    TvCategoryChip(
++                        text = category.name,
++                        selected = category.id == selectedCategoryId,
++                        onClick = { onSelectCategory(category.id) },
++                    )
++                }
+             }
+         }
+ 
+-        items(categories, key = { "${destination.name}:${it.id}" }) { category ->
+-            when (destination) {
+-                TvDestination.Live -> {
+-                    val rows = liveByCategory[category.id].orEmpty().take(24)
+-                    if (rows.isNotEmpty()) {
+-                        TvShelf(
+-                            title = category.name,
+-                            onSeeAll = { onOpenLiveCategory(category.id) },
+-                        ) {
+-                            LazyRow(
+-                                contentPadding = PaddingValues(horizontal = 48.dp, vertical = 10.dp),
+-                                horizontalArrangement = Arrangement.spacedBy(16.dp),
+-                            ) {
+-                                items(rows, key = { it.id }) { row ->
+-                                    TvLandscapeCard(
+-                                        title = row.stream.name,
+-                                        imageUrl = row.stream.streamIcon,
+-                                        subtitle = category.name,
+-                                        icon = Icons.Default.LiveTv,
+-                                        onClick = { onPlayLive(row.stream.streamId) },
+-                                    )
+-                                }
+-                            }
++        val itemCount = when (destination) {
++            TvDestination.Live -> liveRows.size
++            TvDestination.Movies -> movieRows.size
++            TvDestination.Series -> seriesRows.size
++            TvDestination.Home -> 0
++        }
++        if (isLoading && itemCount == 0) {
++            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
++                CircularProgressIndicator(
++                    color = TvAccentMint,
++                    strokeWidth = 3.dp,
++                    modifier = Modifier.size(38.dp),
++                )
++            }
++        } else {
++            val gridState = rememberLazyGridState()
++            LazyVerticalGrid(
++                state = gridState,
++                columns = if (destination == TvDestination.Live) {
++                    GridCells.Adaptive(260.dp)
++                } else {
++                    GridCells.Adaptive(166.dp)
++                },
++                modifier = Modifier.fillMaxSize(),
++                contentPadding = PaddingValues(start = 48.dp, end = 48.dp, top = 12.dp, bottom = 54.dp),
++                horizontalArrangement = Arrangement.spacedBy(20.dp),
++                verticalArrangement = Arrangement.spacedBy(24.dp),
++            ) {
++                when (destination) {
++                    TvDestination.Live -> items(liveRows, key = { it.id }) { row ->
++                        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
++                            TvLandscapeCard(
++                                title = row.stream.name,
++                                imageUrl = row.stream.streamIcon,
++                                subtitle = row.categoryName,
++                                icon = Icons.Default.LiveTv,
++                                onClick = { onPlayLive(row.stream.streamId) },
++                            )
+                         }
+                     }
+-                }
+-
+-                TvDestination.Movies -> {
+-                    val rows = moviesByCategory[category.id].orEmpty().take(24)
+-                    if (rows.isNotEmpty()) {
+-                        MovieRail(
+-                            title = category.name,
+-                            movies = rows,
+-                            onOpenMovie = onOpenMovie,
+-                            onSeeAll = { onOpenMovieCategory(category.id) },
+-                        )
++                    TvDestination.Movies -> items(movieRows, key = { it.id }) { row ->
++                        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
++                            TvPosterCard(
++                                title = row.stream.name,
++                                imageUrl = row.stream.streamIcon,
++                                eyebrow = row.stream.rating?.takeIf(String::isNotBlank)?.let { "★ $it" },
++                                onClick = { onOpenMovie(row.stream.streamId) },
++                            )
++                        }
++                    }
++                    TvDestination.Series -> items(seriesRows, key = { it.id }) { row ->
++                        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
++                            TvPosterCard(
++                                title = row.series.name,
++                                imageUrl = row.series.cover,
++                                eyebrow = row.series.rating?.takeIf(String::isNotBlank)?.let { "★ $it" },
++                                onClick = { onOpenSeries(row.series.seriesId) },
++                            )
++                        }
+                     }
++                    TvDestination.Home -> Unit
+                 }
+-
+-                TvDestination.Series -> {
+-                    val rows = seriesByCategory[category.id].orEmpty().take(24)
+-                    if (rows.isNotEmpty()) {
+-                        SeriesRail(
+-                            title = category.name,
+-                            series = rows,
+-                            onOpenSeries = onOpenSeries,
+-                            onSeeAll = { onOpenSeriesCategory(category.id) },
++                if (hasMore) {
++                    item(
++                        key = "load-more:${destination.name}:$selectedCategoryId",
++                        span = { GridItemSpan(maxLineSpan) },
++                    ) {
++                        Box(
++                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
++                            contentAlignment = Alignment.Center,
++                        ) {
++                            TvActionButton(
++                                text = stringResource(R.string.tv_load_more),
++                                onClick = onLoadMore,
++                            )
++                        }
++                    }
++                } else if (itemCount == 0) {
++                    item(span = { GridItemSpan(maxLineSpan) }) {
++                        TvEmptyState(
++                            title = stringResource(R.string.tv_empty_catalog_title),
++                            body = stringResource(R.string.tv_empty_catalog_body),
++                            icon = when (destination) {
++                                TvDestination.Live -> Icons.Default.LiveTv
++                                TvDestination.Movies -> Icons.Default.Movie
++                                else -> Icons.Default.Tv
++                            },
++                            modifier = Modifier.height(340.dp),
+                         )
+                     }
+                 }
+-
+-                TvDestination.Home -> Unit
+             }
+         }
+     }
+diff --git a/apps/android/app/src/main/res/values-fr/strings.xml b/apps/android/app/src/main/res/values-fr/strings.xml
+index 2627b0d..75bf335 100644
+--- a/apps/android/app/src/main/res/values-fr/strings.xml
++++ b/apps/android/app/src/main/res/values-fr/strings.xml
+@@ -35,6 +35,7 @@
+     <string name="tv_update_detected">NOUVEAUX ÉPISODES</string>
+     <string name="tv_refreshing">Actualisation du catalogue…</string>
+     <string name="tv_see_all">Tout voir</string>
++    <string name="tv_load_more">Afficher la suite</string>
+     <string name="tv_play">Lecture</string>
+     <string name="tv_more_info">Plus d’infos</string>
+     <string name="tv_hero_eyebrow">À LA UNE POUR VOUS</string>
+diff --git a/apps/android/app/src/main/res/values-tr/strings.xml b/apps/android/app/src/main/res/values-tr/strings.xml
+index 13dbfca..1f700f3 100644
+--- a/apps/android/app/src/main/res/values-tr/strings.xml
++++ b/apps/android/app/src/main/res/values-tr/strings.xml
+@@ -44,6 +44,7 @@
+     <string name="empty_no_categories">Henüz kategori yok.</string>
+     <string name="empty_categories_hidden">Tüm kategoriler gizli.</string>
+     <string name="empty_shelf_no_content">Bu kategoride içerik yok.</string>
++    <string name="tv_load_more">Daha fazlasını göster</string>
+     <string name="empty_category_no_live">Bu kategoride kanal yok.</string>
+     <string name="empty_category_no_movies">Bu kategoride film yok.</string>
+     <string name="empty_category_no_series">Bu kategoride dizi yok.</string>
+diff --git a/apps/android/app/src/main/res/values/strings.xml b/apps/android/app/src/main/res/values/strings.xml
+index 675dd8c..04548ae 100644
+--- a/apps/android/app/src/main/res/values/strings.xml
++++ b/apps/android/app/src/main/res/values/strings.xml
+@@ -36,6 +36,7 @@
+     <string name="tv_update_detected">NEW EPISODES</string>
+     <string name="tv_refreshing">Updating catalog…</string>
+     <string name="tv_see_all">See all</string>
++    <string name="tv_load_more">Load more</string>
+     <string name="tv_play">Play</string>
+     <string name="tv_more_info">More info</string>
+     <string name="tv_hero_eyebrow">FEATURED FOR YOU</string>
+-- 
+2.51.1
+
