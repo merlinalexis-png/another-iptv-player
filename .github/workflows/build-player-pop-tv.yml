@@ -10,7 +10,7 @@ on:
       - '.github/workflows/build-player-pop-tv.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -71,3 +71,24 @@ jobs:
           path: source/apps/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish Player Pop TV preview
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK='source/apps/android/app/build/outputs/apk/debug/app-debug.apk'
+          TAG='player-pop-tv-v0.1'
+          ASSET_NAME='Player-Pop-TV-v0.1-debug.apk'
+
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${APK}#${ASSET_NAME}" \
+              --clobber \
+              --repo "${GITHUB_REPOSITORY}"
+          else
+            gh release create "${TAG}" "${APK}#${ASSET_NAME}" \
+              --prerelease \
+              --title 'Player Pop TV v0.1 — préversion Freebox Pop' \
+              --notes 'Première préversion Android TV conçue pour Freebox Pop. Installation manuelle (sideload) requise. Aucun identifiant ni contenu IPTV n’est inclus.' \
+              --repo "${GITHUB_REPOSITORY}"
+          fi
