@@ -43,12 +43,14 @@ jobs:
           cache-dependency-path: source/apps/android/**/*.gradle*
 
       - name: Install Android toolchain
-        run: >-
-          sdkmanager
-          'platforms;android-36'
-          'build-tools;36.0.0'
-          'ndk;27.2.12479018'
-          'cmake;3.22.1'
+        run: |
+          SDKMANAGER_PATH="$(find "${ANDROID_HOME}/cmdline-tools" -type f -path '*/bin/sdkmanager' | sort -V | tail -n 1)"
+          test -n "${SDKMANAGER_PATH}"
+          "${SDKMANAGER_PATH}" \
+            'platforms;android-36' \
+            'build-tools;36.0.0' \
+            'ndk;27.2.12479018' \
+            'cmake;3.22.1'
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
