@@ -1,4 +1,4 @@
-From f18ad2cdd3dc57e015ef76d78982c97795c56989 Mon Sep 17 00:00:00 2001
+From 2c94766af000a5f045af7888fe832c91dcb5abf6 Mon Sep 17 00:00:00 2001
 From: Codex <codex@openai.com>
 Date: Sun, 20 Sep 2026 22:06:59 +0200
 Subject: [PATCH] fix(android-tv): bound catalog memory and stabilize playback
@@ -12,7 +12,7 @@ Subject: [PATCH] fix(android-tv): bound catalog memory and stabilize playback
  .../data/local/LiveStreamDao.kt               |  35 +++
  .../anotheriptvplayer/data/local/SeriesDao.kt |  54 +++++
  .../data/local/VodStreamDao.kt                |  55 +++++
- .../networking/XtreamApiClient.kt             |  95 ++++++++
+ .../networking/XtreamApiClient.kt             |  96 ++++++++
  .../anotheriptvplayer/player/MPVPlayer.kt     |  70 +++++-
  .../anotheriptvplayer/ui/AppNavigation.kt     |   9 -
  .../ui/search/SearchScreen.kt                 |  91 +++----
@@ -22,7 +22,7 @@ Subject: [PATCH] fix(android-tv): bound catalog memory and stabilize playback
  .../app/src/main/res/values-fr/strings.xml    |   1 +
  .../app/src/main/res/values-tr/strings.xml    |   1 +
  .../app/src/main/res/values/strings.xml       |   1 +
- 18 files changed, 811 insertions(+), 250 deletions(-)
+ 18 files changed, 812 insertions(+), 250 deletions(-)
 
 diff --git a/apps/android/TV_PREVIEW.md b/apps/android/TV_PREVIEW.md
 index 48c4ba5..32691d2 100644
@@ -648,10 +648,10 @@ index 2ddaf3d..5e7a58c 100644
      @Update
      suspend fun update(row: VodStreamEntity)
 diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt
-index 9508aea..bb59a70 100644
+index 9508aea..feb9039 100644
 --- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt
 +++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt
-@@ -4,9 +4,11 @@ import android.util.Log
+@@ -4,13 +4,16 @@ import android.util.Log
  import dev.android.anotheriptvplayer.model.Playlist
  import kotlinx.coroutines.Dispatchers
  import kotlinx.coroutines.withContext
@@ -663,7 +663,12 @@ index 9508aea..bb59a70 100644
  import kotlinx.serialization.json.Json
  import kotlinx.serialization.json.JsonArray
  import kotlinx.serialization.json.JsonElement
-@@ -139,6 +141,69 @@ class XtreamApiClient(
+ import kotlinx.serialization.json.JsonNull
++import kotlinx.serialization.json.decodeToSequence
+ import kotlinx.serialization.serializer
+ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+ import okhttp3.OkHttpClient
+@@ -139,6 +142,69 @@ class XtreamApiClient(
          }
      }
  
@@ -733,7 +738,7 @@ index 9508aea..bb59a70 100644
      // ---- API methods ----
  
      /** Login / verify. Throws [XtreamException.Unauthenticated] if `auth != 1`. */
-@@ -177,6 +242,36 @@ class XtreamApiClient(
+@@ -177,6 +243,36 @@ class XtreamApiClient(
              queryItems = categoryId?.let { mapOf("category_id" to it) } ?: emptyMap(),
          )
  
