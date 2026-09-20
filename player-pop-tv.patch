@@ -1,0 +1,3432 @@
+From f8de4131f2c3090a7a47556dae30fffa8643dd7d Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sun, 20 Sep 2026 19:47:59 +0200
+Subject: [PATCH] feat(android-tv): add premium Player Pop preview
+
+---
+ .github/workflows/build-native-android-tv.yml |  56 ++
+ apps/android/TV_PREVIEW.md                    |  59 ++
+ apps/android/Vendor/libmpv-android/Makefile   |   4 +-
+ apps/android/app/build.gradle.kts             |   9 +-
+ .../ExampleInstrumentedTest.kt                |   4 +-
+ apps/android/app/src/main/AndroidManifest.xml |  17 +-
+ .../android/anotheriptvplayer/MainActivity.kt |  10 +-
+ .../anotheriptvplayer/data/DownloadWorker.kt  |  32 +-
+ .../data/EpisodeUpdateStore.kt                | 139 +++
+ .../data/PlaylistContentStore.kt              |  40 +-
+ .../networking/XtreamApiClient.kt             |  12 +-
+ .../networking/XtreamError.kt                 |  10 +-
+ .../anotheriptvplayer/player/MPVPlayer.kt     |  24 +-
+ .../anotheriptvplayer/ui/AppNavigation.kt     | 125 ++-
+ .../ui/dashboard/detail/MovieDetailScreen.kt  |   2 +-
+ .../ui/dashboard/detail/SeriesDetailScreen.kt |   2 +-
+ .../anotheriptvplayer/ui/search/SearchBody.kt |  45 +-
+ .../ui/search/SearchScreen.kt                 | 101 ++-
+ .../anotheriptvplayer/ui/theme/Color.kt       |  18 +-
+ .../anotheriptvplayer/ui/theme/Theme.kt       |   8 +-
+ .../anotheriptvplayer/ui/theme/Type.kt        |  50 +-
+ .../ui/tv/PremiumTvDashboardScreen.kt         | 315 +++++++
+ .../anotheriptvplayer/ui/tv/TvComponents.kt   | 830 ++++++++++++++++++
+ .../anotheriptvplayer/ui/tv/TvHomeScreen.kt   | 518 +++++++++++
+ .../ui/util/ExternalPlayer.kt                 |   2 +-
+ .../app/src/main/res/drawable/tv_banner.xml   |  39 +
+ .../app/src/main/res/values-fr/strings.xml    | 250 ++++++
+ .../app/src/main/res/values/strings.xml       |  37 +-
+ .../data/EpisodeUpdateDetectorTest.kt         |  97 ++
+ 29 files changed, 2734 insertions(+), 121 deletions(-)
+ create mode 100644 .github/workflows/build-native-android-tv.yml
+ create mode 100644 apps/android/TV_PREVIEW.md
+ create mode 100644 apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/EpisodeUpdateStore.kt
+ create mode 100644 apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/PremiumTvDashboardScreen.kt
+ create mode 100644 apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvComponents.kt
+ create mode 100644 apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvHomeScreen.kt
+ create mode 100644 apps/android/app/src/main/res/drawable/tv_banner.xml
+ create mode 100644 apps/android/app/src/main/res/values-fr/strings.xml
+ create mode 100644 apps/android/app/src/test/java/dev/android/anotheriptvplayer/data/EpisodeUpdateDetectorTest.kt
+
+diff --git a/.github/workflows/build-native-android-tv.yml b/.github/workflows/build-native-android-tv.yml
+new file mode 100644
+index 0000000..e7557b5
+--- /dev/null
++++ b/.github/workflows/build-native-android-tv.yml
+@@ -0,0 +1,56 @@
++name: Native Android TV · Preview APK
++
++on:
++  workflow_dispatch:
++  pull_request:
++    paths:
++      - 'apps/android/**'
++      - '.github/workflows/build-native-android-tv.yml'
++
++permissions:
++  contents: read
++
++jobs:
++  build:
++    runs-on: ubuntu-latest
++    timeout-minutes: 40
++
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++
++      - name: Set up Java 17
++        uses: actions/setup-java@v4
++        with:
++          distribution: temurin
++          java-version: '17'
++          cache: gradle
++
++      - name: Set up Android SDK
++        uses: android-actions/setup-android@v3
++
++      - name: Install Android toolchain
++        run: >-
++          sdkmanager
++          'platforms;android-36'
++          'build-tools;36.0.0'
++          'ndk;27.2.12479018'
++          'cmake;3.22.1'
++
++      - name: Set up Gradle cache
++        uses: gradle/actions/setup-gradle@v4
++
++      - name: Stage libmpv binaries
++        run: make -C apps/android/Vendor/libmpv-android
++
++      - name: Test and build installable preview APK
++        working-directory: apps/android
++        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
++
++      - name: Upload Player Pop APK
++        uses: actions/upload-artifact@v4
++        with:
++          name: another-tv-player-pop-preview
++          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
++          if-no-files-found: error
++          retention-days: 14
+diff --git a/apps/android/TV_PREVIEW.md b/apps/android/TV_PREVIEW.md
+new file mode 100644
+index 0000000..48c4ba5
+--- /dev/null
++++ b/apps/android/TV_PREVIEW.md
+@@ -0,0 +1,59 @@
++# Another TV — Player Pop preview
++
++This native Android build is a separate, remote-first preview of Another IPTV.
++Its application id is `dev.android.anotheriptvplayer.tvpreview`, so it can be
++installed next to another build without replacing it.
++
++## Included in 0.1
++
++- Android TV / Google TV launcher entry and Player Pop compatibility
++- premium dark home with hero, catalog rails and visible D-pad focus
++- Live, Movies and Series catalog navigation
++- Continue Watching and local, private recommendations
++- New Episodes button, unread badge and an expandable notification drawer
++- automatic catalog refresh baseline (at most once every six hours)
++- existing Xtream, playback, favorites, history and offline-download plumbing
++- accent-insensitive title, actor and director search when metadata is available
++- remote microphone search with French/English auto-switch on Android 14+
++- French and English TV labels
++- parallel catalog synchronization for shorter refreshes
++- safer resumable downloads and redacted IPTV credentials in logs
++
++The new-episode feed uses Xtream's `last_modified` value. Some providers do not
++update that field reliably, so the preview deliberately says “update detected”
++instead of inventing an episode number.
++
++## Free build
++
++Run the `Native Android TV · Preview APK` GitHub Actions workflow. It produces a
++debug-signed `app-debug.apk`; debug signing is free and is enough for sideloading.
++No Play Store account or paid certificate is required.
++
++For a local build:
++
++```bash
++make -C apps/android/Vendor/libmpv-android
++cd apps/android
++./gradlew testDebugUnitTest assembleDebug
++```
++
++The APK is written to:
++
++```text
++apps/android/app/build/outputs/apk/debug/app-debug.apk
++```
++
++## Install on Freebox Player Pop
++
++Enable installation from unknown sources for the file-manager app used on the
++Player Pop, copy the APK through a USB drive or a trusted local transfer tool,
++then open it and confirm installation. A future preview can add in-app update
++delivery; 0.1 intentionally keeps distribution simple and account-free.
++
++## Planned after the first TV preview
++
++- translated-title aliases and richer fuzzy search from an external metadata source
++- richer detail, settings, downloads and playlist screens for the remote
++- optional self-hosted profile sync between iPhone, iPad and TV
++- external ranking sources for genuine France/world charts
++- broader codec/device testing and release signing for seamless upgrades
+diff --git a/apps/android/Vendor/libmpv-android/Makefile b/apps/android/Vendor/libmpv-android/Makefile
+index 42dcba2..b73491a 100644
+--- a/apps/android/Vendor/libmpv-android/Makefile
++++ b/apps/android/Vendor/libmpv-android/Makefile
+@@ -43,8 +43,8 @@ all: $(EXTRACT_STAMPS)
+ $(CACHE_DIR)/default-%-$(MPV_ANDROID_VERSION).jar:
+ 	@mkdir -p $(CACHE_DIR)
+ 	@rm -f $@.tmp
+-	curl -L $(BASE_URL)/default-$*.jar -o $@.tmp
+-	shasum -a 256 -c <<< '$(SHA256_$*)  $@.tmp'
++	curl --fail --location --retry 3 $(BASE_URL)/default-$*.jar -o $@.tmp
++	printf '%s  %s\n' '$(SHA256_$*)' '$@.tmp' | shasum -a 256 -c -
+ 	mv $@.tmp $@
+ 	@touch $@
+ 
+diff --git a/apps/android/app/build.gradle.kts b/apps/android/app/build.gradle.kts
+index 3707ac8..111fc51 100644
+--- a/apps/android/app/build.gradle.kts
++++ b/apps/android/app/build.gradle.kts
+@@ -9,13 +9,16 @@ plugins {
+ android {
+     namespace = "dev.android.anotheriptvplayer"
+     compileSdk = 36
++    ndkVersion = "27.2.12479018"
+ 
+     defaultConfig {
+-        applicationId = "dev.android.anotheriptvplayer"
++        // Separate id so this TV preview can coexist with the App Store / Play
++        // build of Another IPTV on the same device.
++        applicationId = "dev.android.anotheriptvplayer.tvpreview"
+         minSdk = 26
+         targetSdk = 36
+-        versionCode = 1
+-        versionName = "1.0"
++        versionCode = 100
++        versionName = "0.1.0-tv-preview"
+ 
+         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+ 
+diff --git a/apps/android/app/src/androidTest/java/dev/android/anotheriptvplayer/ExampleInstrumentedTest.kt b/apps/android/app/src/androidTest/java/dev/android/anotheriptvplayer/ExampleInstrumentedTest.kt
+index 4ec287c..7746719 100644
+--- a/apps/android/app/src/androidTest/java/dev/android/anotheriptvplayer/ExampleInstrumentedTest.kt
++++ b/apps/android/app/src/androidTest/java/dev/android/anotheriptvplayer/ExampleInstrumentedTest.kt
+@@ -19,6 +19,6 @@ class ExampleInstrumentedTest {
+     fun useAppContext() {
+         // Context of the app under test.
+         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+-        assertEquals("dev.android.anotheriptvplayer", appContext.packageName)
++        assertEquals("dev.android.anotheriptvplayer.tvpreview", appContext.packageName)
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/apps/android/app/src/main/AndroidManifest.xml b/apps/android/app/src/main/AndroidManifest.xml
+index 15de213..64b2278 100644
+--- a/apps/android/app/src/main/AndroidManifest.xml
++++ b/apps/android/app/src/main/AndroidManifest.xml
+@@ -15,11 +15,16 @@
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+     <uses-permission android:name="android.permission.WAKE_LOCK" />
+ 
++    <!-- Android TV / Player Pop: remote-first, touchscreen optional. Keeping
++         leanback optional preserves phone compatibility for development. -->
++    <uses-feature android:name="android.software.leanback" android:required="false" />
++    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
++    <uses-feature android:name="android.hardware.microphone" android:required="false" />
++
+     <application
+         android:name=".AnotherIptvPlayerApp"
+-        android:allowBackup="true"
+-        android:dataExtractionRules="@xml/data_extraction_rules"
+-        android:fullBackupContent="@xml/backup_rules"
++        android:allowBackup="false"
++        android:banner="@drawable/tv_banner"
+         android:icon="@mipmap/ic_launcher"
+         android:label="@string/app_name"
+         android:roundIcon="@mipmap/ic_launcher_round"
+@@ -43,8 +48,12 @@
+                 <action android:name="android.intent.action.MAIN" />
+                 <category android:name="android.intent.category.LAUNCHER" />
+             </intent-filter>
++            <intent-filter>
++                <action android:name="android.intent.action.MAIN" />
++                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
++            </intent-filter>
+         </activity>
+ 
+     </application>
+ 
+-</manifest>
+\ No newline at end of file
++</manifest>
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/MainActivity.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/MainActivity.kt
+index a43e770..e527165 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/MainActivity.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/MainActivity.kt
+@@ -12,6 +12,7 @@ import androidx.compose.runtime.LaunchedEffect
+ import androidx.compose.runtime.remember
+ import androidx.compose.runtime.snapshotFlow
+ import androidx.compose.ui.Modifier
++import androidx.compose.ui.platform.LocalConfiguration
+ import dev.android.anotheriptvplayer.player.LocalPlayerActivityState
+ import dev.android.anotheriptvplayer.player.PlayerActivityState
+ import dev.android.anotheriptvplayer.ui.AppNavigation
+@@ -35,7 +36,14 @@ class MainActivity : ComponentActivity() {
+         enableEdgeToEdge()
+         val app = application as AnotherIptvPlayerApp
+         setContent {
+-            AnotherIptvPlayerTheme {
++            val configuration = LocalConfiguration.current
++            val isTelevision = configuration.uiMode and Configuration.UI_MODE_TYPE_MASK ==
++                Configuration.UI_MODE_TYPE_TELEVISION
++            AnotherIptvPlayerTheme(
++                darkTheme = isTelevision ||
++                    (configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES),
++                dynamicColor = false,
++            ) {
+                 // Push brightness-override changes onto the window. Setting
+                 // `screenBrightness = -1f` restores the system value (iOS
+                 // `UIScreen.main.brightness` doesn't need this gymnastics).
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/DownloadWorker.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/DownloadWorker.kt
+index 50b115b..13b8ed9 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/DownloadWorker.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/DownloadWorker.kt
+@@ -65,7 +65,7 @@ class DownloadWorker(
+ 
+         return@withContext try {
+             httpClient.newCall(requestBuilder.build()).execute().use { response ->
+-                if (!response.isSuccessful && response.code != 206) {
++                if (response.code != 200 && response.code != 206) {
+                     fail(database, downloadId, "HTTP ${response.code}")
+                     return@withContext Result.failure()
+                 }
+@@ -75,22 +75,38 @@ class DownloadWorker(
+                     return@withContext Result.failure()
+                 }
+ 
++                val validPartialResponse = response.code != 206 ||
++                    response.header("Content-Range")
++                        ?.startsWith("bytes $startOffset-") == true
++                val resumeAccepted = startOffset > 0L && response.code == 206
++
++                // A number of IPTV servers answer a Range request with 200
++                // and the complete file. In that case we must truncate and
++                // restart; appending would silently create an unreadable file.
++                // A malformed 206 is rejected because its body may start at an
++                // unknown byte and cannot be written safely.
++                if (!validPartialResponse) {
++                    fail(database, downloadId, "Invalid Content-Range")
++                    return@withContext Result.failure()
++                }
++
++                val writeOffset = if (resumeAccepted) startOffset else 0L
+                 val contentLengthHeader = body.contentLength()
+                 val totalBytes = if (contentLengthHeader > 0) {
+-                    contentLengthHeader + startOffset
++                    contentLengthHeader + writeOffset
+                 } else row.totalBytes
+                 if (totalBytes > 0 && totalBytes != row.totalBytes) {
+                     database.downloadedItemDao().setProgress(
+                         downloadId,
+-                        downloaded = startOffset,
++                        downloaded = writeOffset,
+                         total = totalBytes,
+                     )
+                 }
+ 
+-                val appendMode = startOffset > 0
++                val appendMode = resumeAccepted
+                 FileOutputStream(destFile, appendMode).use { out ->
+                     val buffer = ByteArray(BUFFER_SIZE)
+-                    var downloaded = startOffset
++                    var downloaded = writeOffset
+                     var lastUpdateMs = 0L
+                     body.byteStream().use { input ->
+                         while (true) {
+@@ -129,11 +145,11 @@ class DownloadWorker(
+                 Result.success()
+             }
+         } catch (e: IOException) {
+-            fail(database, downloadId, e.message ?: e.javaClass.simpleName)
++            fail(database, downloadId, e.javaClass.simpleName)
+             Result.retry()
+         } catch (t: Throwable) {
+-            Log.e(TAG, "Download failed", t)
+-            fail(database, downloadId, t.message ?: t.javaClass.simpleName)
++            Log.e(TAG, "Download failed (${t.javaClass.simpleName})")
++            fail(database, downloadId, t.javaClass.simpleName)
+             Result.failure()
+         }
+     }
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/EpisodeUpdateStore.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/EpisodeUpdateStore.kt
+new file mode 100644
+index 0000000..5415938
+--- /dev/null
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/EpisodeUpdateStore.kt
+@@ -0,0 +1,139 @@
++package dev.android.anotheriptvplayer.data
++
++import android.content.Context
++import dev.android.anotheriptvplayer.data.local.SeriesWithCategory
++import dev.android.anotheriptvplayer.data.local.WatchHistoryEntity
++import java.time.Instant
++
++/**
++ * A provider-side update detected for a series the user has already watched.
++ *
++ * Xtream does not expose a dedicated "new episode" feed. Most servers do,
++ * however, bump `last_modified` whenever episodes are added. We compare that
++ * value with the last time the profile watched the series. The wording in the
++ * UI deliberately says "update detected" rather than inventing an episode
++ * number that the provider did not send.
++ */
++data class EpisodeUpdate(
++    val seriesId: Int,
++    val seriesName: String,
++    val imageUrl: String?,
++    val categoryName: String,
++    val modifiedAtMillis: Long,
++    val signature: String,
++    val isUnread: Boolean,
++)
++
++/** Pure detector kept separate from persistence so it is straightforward to test. */
++object EpisodeUpdateDetector {
++
++    fun detect(
++        series: List<SeriesWithCategory>,
++        history: List<WatchHistoryEntity>,
++        readSignatures: Set<String>,
++    ): List<EpisodeUpdate> {
++        val latestWatchBySeries = history
++            .asSequence()
++            .filter { it.type == "series" }
++            .mapNotNull { row ->
++                val seriesId = row.seriesId?.toIntOrNull() ?: return@mapNotNull null
++                seriesId to row.lastWatchedAt
++            }
++            .groupingBy { it.first }
++            .fold(0L) { latest, (_, watchedAt) -> maxOf(latest, watchedAt) }
++
++        if (latestWatchBySeries.isEmpty()) return emptyList()
++
++        return series.asSequence()
++            .mapNotNull { row ->
++                val watchedAt = latestWatchBySeries[row.series.seriesId]
++                    ?: return@mapNotNull null
++                val modifiedAt = parseProviderTimestamp(row.series.lastModified)
++                    ?: return@mapNotNull null
++
++                // Provider clocks are occasionally a few seconds ahead. A
++                // one-minute tolerance prevents a false badge immediately
++                // after finishing an episode.
++                if (modifiedAt <= watchedAt + CLOCK_TOLERANCE_MS) return@mapNotNull null
++
++                val signature = "${row.series.seriesId}:$modifiedAt"
++                EpisodeUpdate(
++                    seriesId = row.series.seriesId,
++                    seriesName = row.series.name,
++                    imageUrl = row.series.cover ?: row.series.backdropPath,
++                    categoryName = row.categoryName,
++                    modifiedAtMillis = modifiedAt,
++                    signature = signature,
++                    isUnread = signature !in readSignatures,
++                )
++            }
++            .sortedByDescending(EpisodeUpdate::modifiedAtMillis)
++            .toList()
++    }
++
++    /** Xtream servers return either unix seconds, unix millis, or ISO-8601. */
++    fun parseProviderTimestamp(rawValue: String?): Long? {
++        val value = rawValue?.trim()?.takeIf { it.isNotEmpty() } ?: return null
++        value.toLongOrNull()?.let { numeric ->
++            return if (numeric in 1..99_999_999_999L) numeric * 1_000L else numeric
++        }
++        return runCatching { Instant.parse(value).toEpochMilli() }.getOrNull()
++    }
++
++    private const val CLOCK_TOLERANCE_MS = 60_000L
++}
++
++/** Persists read state without adding a database migration to the first TV preview. */
++class EpisodeUpdateReadStore(context: Context) {
++    private val preferences = context.applicationContext.getSharedPreferences(
++        PREFS_NAME,
++        Context.MODE_PRIVATE,
++    )
++
++    fun readSignatures(playlistId: String): Set<String> =
++        preferences.getStringSet(key(playlistId), emptySet()).orEmpty().toSet()
++
++    fun markRead(playlistId: String, signatures: Collection<String>): Set<String> {
++        if (signatures.isEmpty()) return readSignatures(playlistId)
++        val merged = (readSignatures(playlistId) + signatures)
++            .toList()
++            .takeLast(MAX_SAVED_SIGNATURES)
++            .toSet()
++        preferences.edit().putStringSet(key(playlistId), merged).apply()
++        return merged
++    }
++
++    private fun key(playlistId: String) = "read_updates_$playlistId"
++
++    private companion object {
++        const val PREFS_NAME = "episode_update_state"
++        const val MAX_SAVED_SIGNATURES = 500
++    }
++}
++
++/** Small refresh policy shared by the premium dashboard and its manual refresh action. */
++class CatalogRefreshPolicy(context: Context) {
++    private val preferences = context.applicationContext.getSharedPreferences(
++        PREFS_NAME,
++        Context.MODE_PRIVATE,
++    )
++
++    fun hasBaseline(playlistId: String): Boolean =
++        preferences.contains(key(playlistId))
++
++    fun shouldRefresh(playlistId: String, nowMillis: Long = System.currentTimeMillis()): Boolean {
++        val lastRefresh = preferences.getLong(key(playlistId), 0L)
++        return lastRefresh > 0L && nowMillis - lastRefresh >= REFRESH_INTERVAL_MS
++    }
++
++    fun markRefreshed(playlistId: String, nowMillis: Long = System.currentTimeMillis()) {
++        preferences.edit().putLong(key(playlistId), nowMillis).apply()
++    }
++
++    private fun key(playlistId: String) = "catalog_refresh_$playlistId"
++
++    private companion object {
++        const val PREFS_NAME = "catalog_refresh_policy"
++        const val REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1_000L
++    }
++}
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/PlaylistContentStore.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/PlaylistContentStore.kt
+index f41d1d3..0aea1cf 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/PlaylistContentStore.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/PlaylistContentStore.kt
+@@ -19,7 +19,6 @@ import kotlinx.coroutines.CoroutineScope
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.SupervisorJob
+ import kotlinx.coroutines.async
+-import kotlinx.coroutines.awaitAll
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.flow.StateFlow
+ import kotlinx.coroutines.flow.asStateFlow
+@@ -163,7 +162,7 @@ class PlaylistContentStore(
+             _streamsLoaded.value = true
+         } catch (e: Throwable) {
+             if (loadToken != token) return
+-            Log.e(TAG, "loadPlaylist failed", e)
++            Log.e(TAG, "loadPlaylist failed (${e.javaClass.simpleName})")
+             _loadError.value = e.message ?: e.javaClass.simpleName
+             _loadingMessage.value = null
+             _isLoading.value = false
+@@ -261,14 +260,11 @@ class PlaylistContentStore(
+             val live = async { database.liveStreamDao().getWithCategory(playlistId) }
+             val vod = async { database.vodStreamDao().getWithCategory(playlistId) }
+             val series = async { database.seriesDao().getWithCategory(playlistId) }
+-            awaitAll(live, vod, series).let {
+-                @Suppress("UNCHECKED_CAST")
+-                StreamsBundle(
+-                    live = it[0] as List<LiveStreamWithCategory>,
+-                    vod = it[1] as List<VodStreamWithCategory>,
+-                    series = it[2] as List<SeriesWithCategory>,
+-                )
+-            }
++            StreamsBundle(
++                live = live.await(),
++                vod = vod.await(),
++                series = series.await(),
++            )
+         }
+     }
+ 
+@@ -292,18 +288,20 @@ class PlaylistContentStore(
+         // Network fetches first, outside the transaction — long-running I/O
+         // and Room write transactions don't mix.
+         progress(appContext.getString(R.string.sync_categories))
+-        val liveCats = api.getLiveCategories()
+-        val vodCats = api.getVODCategories()
+-        val seriesCats = api.getSeriesCategories()
+-
+-        progress(appContext.getString(R.string.sync_live))
+-        val liveStreamsApi = api.getLiveStreams()
+-
+-        progress(appContext.getString(R.string.sync_movies))
+-        val vodsApi = api.getVODStreams()
++        val (liveCats, vodCats, seriesCats) = kotlinx.coroutines.coroutineScope {
++            val live = async { api.getLiveCategories() }
++            val vod = async { api.getVODCategories() }
++            val series = async { api.getSeriesCategories() }
++            Triple(live.await(), vod.await(), series.await())
++        }
+ 
+-        progress(appContext.getString(R.string.sync_series))
+-        val seriesApi = api.getSeries()
++        progress(appContext.getString(R.string.sync_catalog_content))
++        val (liveStreamsApi, vodsApi, seriesApi) = kotlinx.coroutines.coroutineScope {
++            val live = async { api.getLiveStreams() }
++            val vod = async { api.getVODStreams() }
++            val series = async { api.getSeries() }
++            Triple(live.await(), vod.await(), series.await())
++        }
+ 
+         val filterAdult = playlist.filterAdultContent
+         val adultLiveCatIds = if (filterAdult) AdultContentFilter.adultCategoryIds(liveCats) else emptySet()
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt
+index eeb27d2..9508aea 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt
+@@ -102,7 +102,13 @@ class XtreamApiClient(
+         try {
+             XtreamJson.decodeFromString(serializer, raw)
+         } catch (e: Throwable) {
+-            Log.w(TAG, "Decoding error for $url\nBody: $raw", e)
++            // Never log the URL: Xtream credentials live in its query string.
++            // The raw body can contain subscription and account metadata too.
++            Log.w(
++                TAG,
++                "Decoding failed for action=${action ?: "verify"} " +
++                    "(payloadChars=${raw.length}, ${e.javaClass.simpleName})",
++            )
+             throw XtreamException.Decoding(e)
+         }
+     }
+@@ -126,7 +132,9 @@ class XtreamApiClient(
+         return array.mapNotNull { element ->
+             if (element is JsonNull) return@mapNotNull null
+             runCatching { XtreamJson.decodeFromJsonElement(itemSerializer, element) }
+-                .onFailure { Log.w(TAG, "Skipping bad item in $action: ${it.message}") }
++                .onFailure {
++                    Log.w(TAG, "Skipping bad item in $action (${it.javaClass.simpleName})")
++                }
+                 .getOrNull()
+         }
+     }
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamError.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamError.kt
+index e21588c..37dddf7 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamError.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamError.kt
+@@ -19,18 +19,18 @@ sealed class XtreamException(message: String, cause: Throwable? = null) :
+ 
+     /** The composed URL is malformed (bad scheme, empty host, etc.). */
+     class InvalidUrl(val url: String) :
+-        XtreamException("Invalid Xtream URL: $url") {
++        XtreamException("Invalid Xtream URL.") {
+         override fun userMessage(context: Context): String =
+             context.getString(R.string.xtream_error_invalid_url, url)
+     }
+ 
+     /** Underlying transport failure — DNS, timeout, TLS, no internet. */
+     class Network(cause: Throwable) :
+-        XtreamException("Network error: ${cause.message ?: cause.javaClass.simpleName}", cause) {
++        XtreamException("Network error (${cause.javaClass.simpleName}).", cause) {
+         override fun userMessage(context: Context): String =
+             context.getString(
+                 R.string.xtream_error_network,
+-                cause?.message ?: cause?.javaClass?.simpleName.orEmpty(),
++                cause?.javaClass?.simpleName.orEmpty(),
+             )
+     }
+ 
+@@ -43,11 +43,11 @@ sealed class XtreamException(message: String, cause: Throwable? = null) :
+ 
+     /** JSON didn't decode — payload likely doesn't match the expected shape. */
+     class Decoding(cause: Throwable) :
+-        XtreamException("Could not decode server response: ${cause.message ?: cause.javaClass.simpleName}", cause) {
++        XtreamException("Could not decode server response (${cause.javaClass.simpleName}).", cause) {
+         override fun userMessage(context: Context): String =
+             context.getString(
+                 R.string.xtream_error_decoding,
+-                cause?.message ?: cause?.javaClass?.simpleName.orEmpty(),
++                cause?.javaClass?.simpleName.orEmpty(),
+             )
+     }
+ 
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/player/MPVPlayer.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/player/MPVPlayer.kt
+index 7952510..fc1556c 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/player/MPVPlayer.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/player/MPVPlayer.kt
+@@ -312,7 +312,7 @@ class MPVPlayer(context: Context) {
+             // hands us its Surface. Without this guard `gpu-context=android`
+             // fails VO init and we surface "cannot reach server" instead of
+             // the real "no surface yet".
+-            Log.i(TAG, "load() before surface ready — deferring url=$url")
++            Log.i(TAG, "load() before surface ready — deferring media request")
+             pendingLoad = req
+             return@onMpvQueue
+         }
+@@ -335,9 +335,12 @@ class MPVPlayer(context: Context) {
+                 add("start=${req.startSeconds}")
+             }
+         }.toTypedArray()
+-        Log.i(TAG, "loadfile args=${args.toList()}")
++        Log.i(
++            TAG,
++            "loadfile requested (resume=${req.startSeconds != null}, live=${req.liveLowLatency})",
++        )
+         val rc = MPVLib.command(handle, args)
+-        if (rc < 0) Log.w(TAG, "loadfile rc=$rc (${MPVLib.errorString(rc)}) args=${args.toList()}")
++        if (rc < 0) Log.w(TAG, "loadfile rc=$rc (${MPVLib.errorString(rc)})")
+ 
+         if (req.play) setPaused(false)
+         publishPlaybackState()
+@@ -645,7 +648,7 @@ class MPVPlayer(context: Context) {
+         // session shows the demuxer / VO / mediacodec story end-to-end. Worth
+         // the verbosity during the IPTV bring-up; tighten back to "warn" once
+         // the player is stable across providers.
+-        val line = text.trimEnd('\n')
++        val line = redactSensitiveLogText(text.trimEnd('\n'))
+         when (level) {
+             "fatal", "error" -> Log.e("mpv", "$prefix: $line")
+             "warn"           -> Log.w("mpv", "$prefix: $line")
+@@ -671,7 +674,7 @@ class MPVPlayer(context: Context) {
+         if (_playbackFailureMessage.value == null) {
+             _playbackFailureMessage.value = msg
+         }
+-        Log.i(TAG, "surfaced failure: [$level] $prefix: $text → $msg")
++        Log.i(TAG, "surfaced failure: [$level] $prefix: $line → $msg")
+     }
+ 
+     private fun shouldSurfaceLogAsPlaybackFailure(
+@@ -759,6 +762,13 @@ class MPVPlayer(context: Context) {
+         _playbackFailureMessage.value = null
+     }
+ 
++    private fun redactSensitiveLogText(value: String): String {
++        val withoutCredentials = CREDENTIAL_QUERY_REGEX.replace(value) { match ->
++            "${match.groupValues[1]}=<redacted>"
++        }
++        return STREAM_URL_REGEX.replace(withoutCredentials, "<stream-url>")
++    }
++
+     // ---------------------------------------------------------------------
+     // Load timeout watchdog (mirror of iOS `scheduleLoadTimeoutWatchdog`).
+     // ---------------------------------------------------------------------
+@@ -800,6 +810,10 @@ class MPVPlayer(context: Context) {
+     companion object {
+         private const val TAG = "MPVPlayer"
+         private const val RECENT_LOG_MAX = 80
++        private val CREDENTIAL_QUERY_REGEX =
++            Regex("""(?i)\b(username|password)=([^&\s]+)""")
++        private val STREAM_URL_REGEX =
++            Regex("""(?i)https?://[^\s\"'<>]+""")
+ 
+         // Property observation reply IDs — keep contiguous to make the
+         // listener `when` switch a jump table.
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/AppNavigation.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/AppNavigation.kt
+index dd9b297..3629c70 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/AppNavigation.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/AppNavigation.kt
+@@ -1,6 +1,7 @@
+ package dev.android.anotheriptvplayer.ui
+ 
+ import android.net.Uri
++import android.content.res.Configuration
+ import androidx.compose.animation.core.FastOutSlowInEasing
+ import androidx.compose.animation.core.tween
+ import androidx.compose.animation.fadeIn
+@@ -15,6 +16,7 @@ import androidx.compose.runtime.remember
+ import androidx.compose.runtime.rememberCoroutineScope
+ import androidx.compose.runtime.saveable.rememberSaveable
+ import androidx.compose.runtime.setValue
++import androidx.compose.ui.platform.LocalConfiguration
+ import dev.android.anotheriptvplayer.ui.components.ModalSlideDurationMs
+ import androidx.navigation.NavType
+ import androidx.navigation.compose.NavHost
+@@ -39,6 +41,7 @@ import dev.android.anotheriptvplayer.ui.player.PlayerScreen
+ import dev.android.anotheriptvplayer.ui.player.PlayerViewModel
+ import dev.android.anotheriptvplayer.ui.playlist.AddXtreamPlaylistScreen
+ import dev.android.anotheriptvplayer.ui.playlist.PlaylistScreen
++import dev.android.anotheriptvplayer.ui.tv.PremiumTvDashboardScreen
+ 
+ /** Route names for the app's navigation graph. */
+ private object Routes {
+@@ -117,6 +120,11 @@ fun AppNavigation() {
+     val lastPlaylistStore = LocalLastPlaylistStore.current
+     val playlistRepository = LocalPlaylistRepository.current
+     val scope = rememberCoroutineScope()
++    val configuration = LocalConfiguration.current
++    val isTelevision = remember(configuration.uiMode) {
++        configuration.uiMode and Configuration.UI_MODE_TYPE_MASK ==
++            Configuration.UI_MODE_TYPE_TELEVISION
++    }
+ 
+     // Mirrors iOS `hasAttemptedAutoLoad`: try once per process to resume the
+     // last opened playlist. If the saved id is missing from the DB, silently
+@@ -202,44 +210,85 @@ fun AppNavigation() {
+                     )
+                 }
+                 else -> {
+-                    PlaylistDashboardScreen(
+-                        playlistId = id,
+-                        onBack = backWithCleanup,
+-                        onOpenMovie = { streamId ->
+-                            navController.navigate(Routes.movie(id, streamId))
+-                        },
+-                        onOpenSeries = { seriesId ->
+-                            navController.navigate(Routes.series(id, seriesId))
+-                        },
+-                        onOpenLiveCategory = { catId ->
+-                            navController.navigate(Routes.liveCategory(id, catId))
+-                        },
+-                        onOpenVodCategory = { catId ->
+-                            navController.navigate(Routes.vodCategory(id, catId))
+-                        },
+-                        onOpenSeriesCategory = { catId ->
+-                            navController.navigate(Routes.seriesCategory(id, catId))
+-                        },
+-                        onOpenFavorites = { type ->
+-                            navController.navigate(Routes.favorites(id, type))
+-                        },
+-                        onPlayLive = { streamId ->
+-                            navController.navigate(Routes.playerLive(id, streamId))
+-                        },
+-                        onOpenDownloads = {
+-                            navController.navigate(Routes.downloads(id))
+-                        },
+-                        onOpenHistory = {
+-                            navController.navigate(Routes.history(id))
+-                        },
+-                        onOpenSearch = {
+-                            navController.navigate(Routes.search(id))
+-                        },
+-                        onResumeEpisode = { eid ->
+-                            navController.navigate(Routes.playerSeries(id, eid))
+-                        },
+-                        appVersion = dev.android.anotheriptvplayer.BuildConfig.VERSION_NAME,
+-                    )
++                    if (isTelevision) {
++                        PremiumTvDashboardScreen(
++                            playlistId = id,
++                            onBack = backWithCleanup,
++                            onOpenMovie = { streamId ->
++                                navController.navigate(Routes.movie(id, streamId))
++                            },
++                            onPlayMovie = { streamId ->
++                                navController.navigate(Routes.playerMovie(id, streamId))
++                            },
++                            onOpenSeries = { seriesId ->
++                                navController.navigate(Routes.series(id, seriesId))
++                            },
++                            onOpenLiveCategory = { catId ->
++                                navController.navigate(Routes.liveCategory(id, catId))
++                            },
++                            onOpenVodCategory = { catId ->
++                                navController.navigate(Routes.vodCategory(id, catId))
++                            },
++                            onOpenSeriesCategory = { catId ->
++                                navController.navigate(Routes.seriesCategory(id, catId))
++                            },
++                            onPlayLive = { streamId ->
++                                navController.navigate(Routes.playerLive(id, streamId))
++                            },
++                            onOpenDownloads = {
++                                navController.navigate(Routes.downloads(id))
++                            },
++                            onOpenHistory = {
++                                navController.navigate(Routes.history(id))
++                            },
++                            onOpenSearch = {
++                                navController.navigate(Routes.search(id))
++                            },
++                            onResumeEpisode = { episodeId ->
++                                navController.navigate(Routes.playerSeries(id, episodeId))
++                            },
++                            appVersion = dev.android.anotheriptvplayer.BuildConfig.VERSION_NAME,
++                        )
++                    } else {
++                        PlaylistDashboardScreen(
++                            playlistId = id,
++                            onBack = backWithCleanup,
++                            onOpenMovie = { streamId ->
++                                navController.navigate(Routes.movie(id, streamId))
++                            },
++                            onOpenSeries = { seriesId ->
++                                navController.navigate(Routes.series(id, seriesId))
++                            },
++                            onOpenLiveCategory = { catId ->
++                                navController.navigate(Routes.liveCategory(id, catId))
++                            },
++                            onOpenVodCategory = { catId ->
++                                navController.navigate(Routes.vodCategory(id, catId))
++                            },
++                            onOpenSeriesCategory = { catId ->
++                                navController.navigate(Routes.seriesCategory(id, catId))
++                            },
++                            onOpenFavorites = { type ->
++                                navController.navigate(Routes.favorites(id, type))
++                            },
++                            onPlayLive = { streamId ->
++                                navController.navigate(Routes.playerLive(id, streamId))
++                            },
++                            onOpenDownloads = {
++                                navController.navigate(Routes.downloads(id))
++                            },
++                            onOpenHistory = {
++                                navController.navigate(Routes.history(id))
++                            },
++                            onOpenSearch = {
++                                navController.navigate(Routes.search(id))
++                            },
++                            onResumeEpisode = { eid ->
++                                navController.navigate(Routes.playerSeries(id, eid))
++                            },
++                            appVersion = dev.android.anotheriptvplayer.BuildConfig.VERSION_NAME,
++                        )
++                    }
+                 }
+             }
+         }
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/dashboard/detail/MovieDetailScreen.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/dashboard/detail/MovieDetailScreen.kt
+index d7de987..b4a1275 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/dashboard/detail/MovieDetailScreen.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/dashboard/detail/MovieDetailScreen.kt
+@@ -121,7 +121,7 @@ fun MovieDetailScreen(
+                 vodRepository.applyInfo(current.streamId, pl.id, dev.android.anotheriptvplayer.networking.XtreamVODInfo())
+             }
+         } catch (e: Throwable) {
+-            Log.w(TAG, "getVODInfo failed", e)
++            Log.w(TAG, "getVODInfo failed (${e.javaClass.simpleName})")
+             fetchError = e.message
+         } finally {
+             isFetchingMetadata = false
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/dashboard/detail/SeriesDetailScreen.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/dashboard/detail/SeriesDetailScreen.kt
+index 5b7e49c..302200c 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/dashboard/detail/SeriesDetailScreen.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/dashboard/detail/SeriesDetailScreen.kt
+@@ -132,7 +132,7 @@ fun SeriesDetailScreen(
+             val info = client.getSeriesInfo(current.seriesId)
+             seriesRepository.applyInfo(current.seriesId, pl.id, info)
+         } catch (e: Throwable) {
+-            Log.w(TAG, "getSeriesInfo failed", e)
++            Log.w(TAG, "getSeriesInfo failed (${e.javaClass.simpleName})")
+             fetchError = e.message
+         } finally {
+             isFetchingInfo = false
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/search/SearchBody.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/search/SearchBody.kt
+index 2f23263..cd33225 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/search/SearchBody.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/search/SearchBody.kt
+@@ -50,6 +50,7 @@ import androidx.compose.ui.text.style.TextOverflow
+ import androidx.compose.ui.unit.dp
+ import androidx.lifecycle.compose.collectAsStateWithLifecycle
+ import coil.compose.AsyncImage
++import dev.android.anotheriptvplayer.data.CatalogTextSearch
+ import dev.android.anotheriptvplayer.data.local.LiveStreamWithCategory
+ import dev.android.anotheriptvplayer.data.local.SeriesWithCategory
+ import dev.android.anotheriptvplayer.data.local.VodStreamWithCategory
+@@ -109,7 +110,10 @@ fun SearchBody(
+         derivedStateOf {
+             if (debouncedQuery.isEmpty()) emptyList()
+             else live
+-                .filter { (it.stream.categoryId ?: "") !in hiddenLive && matchesQuery(debouncedQuery, it.stream.name) }
++                .filter {
++                    (it.stream.categoryId ?: "") !in hiddenLive &&
++                        CatalogTextSearch.matches(debouncedQuery, it.stream.name)
++                }
+                 .sortedBy { it.stream.name.lowercase() }
+         }
+     }
+@@ -117,7 +121,19 @@ fun SearchBody(
+         derivedStateOf {
+             if (debouncedQuery.isEmpty()) emptyList()
+             else vod
+-                .filter { (it.stream.categoryId ?: "") !in hiddenVod && matchesQuery(debouncedQuery, it.stream.name) }
++                .filter { row ->
++                    (row.stream.categoryId ?: "") !in hiddenVod &&
++                        CatalogTextSearch.matches(
++                            debouncedQuery,
++                            listOfNotNull(
++                                row.stream.name,
++                                row.stream.cast,
++                                row.stream.director,
++                                row.stream.genre,
++                                row.stream.plot,
++                            ).joinToString(" "),
++                        )
++                }
+                 .sortedBy { it.stream.name.lowercase() }
+         }
+     }
+@@ -125,7 +141,19 @@ fun SearchBody(
+         derivedStateOf {
+             if (debouncedQuery.isEmpty()) emptyList()
+             else series
+-                .filter { (it.series.categoryId ?: "") !in hiddenSeries && matchesQuery(debouncedQuery, it.series.name) }
++                .filter { row ->
++                    (row.series.categoryId ?: "") !in hiddenSeries &&
++                        CatalogTextSearch.matches(
++                            debouncedQuery,
++                            listOfNotNull(
++                                row.series.name,
++                                row.series.cast,
++                                row.series.director,
++                                row.series.genre,
++                                row.series.plot,
++                            ).joinToString(" "),
++                        )
++                }
+                 .sortedBy { it.series.name.lowercase() }
+         }
+     }
+@@ -445,14 +473,3 @@ private fun EmptyHint(icon: ImageVector, message: String) {
+         }
+     }
+ }
+-
+-/**
+- * iOS-equivalent: every whitespace-split word in the query must appear
+- * somewhere in [text], case-insensitive. Cheap and good enough for
+- * catalog text; Turkish-locale folding plugs in later.
+- */
+-private fun matchesQuery(query: String, text: String): Boolean {
+-    val words = query.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+-    if (words.isEmpty()) return false
+-    return words.all { word -> text.contains(word, ignoreCase = true) }
+-}
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/search/SearchScreen.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/search/SearchScreen.kt
+index b15e5c6..bc67705 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/search/SearchScreen.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/search/SearchScreen.kt
+@@ -1,5 +1,13 @@
+ package dev.android.anotheriptvplayer.ui.search
+ 
++import android.app.Activity
++import android.content.Intent
++import android.os.Build
++import android.speech.RecognizerIntent
++import androidx.activity.compose.rememberLauncherForActivityResult
++import androidx.activity.result.contract.ActivityResultContracts
++import androidx.compose.animation.core.animateFloatAsState
++import androidx.compose.foundation.BorderStroke
+ import androidx.compose.foundation.background
+ import androidx.compose.foundation.clickable
+ import androidx.compose.foundation.layout.Arrangement
+@@ -19,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.automirrored.filled.ArrowBack
+ import androidx.compose.material.icons.filled.LiveTv
++import androidx.compose.material.icons.filled.Mic
+ import androidx.compose.material.icons.filled.Movie
+ import androidx.compose.material.icons.filled.Tv
+ import androidx.compose.material3.ExperimentalMaterial3Api
+@@ -41,6 +50,8 @@ import androidx.compose.runtime.collectAsState
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.draw.clip
++import androidx.compose.ui.focus.onFocusChanged
++import androidx.compose.ui.graphics.graphicsLayer
+ import androidx.compose.ui.platform.LocalContext
+ import androidx.compose.ui.res.stringResource
+ import androidx.compose.ui.text.style.TextOverflow
+@@ -83,6 +94,41 @@ fun SearchScreen(
+     var query by remember { mutableStateOf("") }
+     var kind by remember { mutableStateOf<PlaylistKind?>(null) }
+ 
++    val voiceIntent = remember {
++        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
++            putExtra(
++                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
++                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
++            )
++            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
++            putExtra(RecognizerIntent.EXTRA_PROMPT, context.getString(R.string.search_voice_prompt))
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
++                putExtra(
++                    RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH,
++                    RecognizerIntent.LANGUAGE_SWITCH_BALANCED,
++                )
++                putStringArrayListExtra(
++                    RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES,
++                    arrayListOf("fr-FR", "en-US", "en-GB"),
++                )
++            }
++        }
++    }
++    val voiceSearchAvailable = remember(context, voiceIntent) {
++        voiceIntent.resolveActivity(context.packageManager) != null
++    }
++    val voiceSearchLauncher = rememberLauncherForActivityResult(
++        contract = ActivityResultContracts.StartActivityForResult(),
++    ) { result ->
++        if (result.resultCode == Activity.RESULT_OK) {
++            result.data
++                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
++                ?.firstOrNull()
++                ?.takeIf { it.isNotBlank() }
++                ?.let { query = it }
++        }
++    }
++
+     LaunchedEffect(playlistId) {
+         kind = repository.find(playlistId)?.kind
+     }
+@@ -109,12 +155,34 @@ fun SearchScreen(
+                         .take(80)
+                         .map { SearchHit.Live(it.stream.streamId, it.stream.name, it.stream.streamIcon, it.categoryName) }
+                     list += xtreamVod
+-                        .filter { CatalogTextSearch.matches(query, it.stream.name) }
++                        .filter { row ->
++                            CatalogTextSearch.matches(
++                                query,
++                                listOfNotNull(
++                                    row.stream.name,
++                                    row.stream.cast,
++                                    row.stream.director,
++                                    row.stream.genre,
++                                    row.stream.plot,
++                                ).joinToString(" "),
++                            )
++                        }
+                         .sortedWith(relevance(query) { it.stream.name })
+                         .take(80)
+                         .map { SearchHit.Movie(it.stream.streamId, it.stream.name, it.stream.streamIcon, it.categoryName) }
+                     list += xtreamSeries
+-                        .filter { CatalogTextSearch.matches(query, it.series.name) }
++                        .filter { row ->
++                            CatalogTextSearch.matches(
++                                query,
++                                listOfNotNull(
++                                    row.series.name,
++                                    row.series.cast,
++                                    row.series.director,
++                                    row.series.genre,
++                                    row.series.plot,
++                                ).joinToString(" "),
++                            )
++                        }
+                         .sortedWith(relevance(query) { it.series.name })
+                         .take(80)
+                         .map { SearchHit.Series(it.series.seriesId, it.series.name, it.series.cover, it.categoryName) }
+@@ -146,6 +214,16 @@ fun SearchScreen(
+                 value = query,
+                 onValueChange = { query = it },
+                 placeholder = { Text(stringResource(R.string.common_search) + "…") },
++                trailingIcon = if (voiceSearchAvailable) {
++                    {
++                        IconButton(onClick = { voiceSearchLauncher.launch(voiceIntent) }) {
++                            Icon(
++                                imageVector = Icons.Default.Mic,
++                                contentDescription = stringResource(R.string.search_voice_action),
++                            )
++                        }
++                    }
++                } else null,
+                 singleLine = true,
+                 modifier = Modifier
+                     .fillMaxWidth()
+@@ -189,10 +267,25 @@ fun SearchScreen(
+ 
+ @Composable
+ private fun SearchRow(hit: SearchHit, onClick: () -> Unit) {
++    var focused by remember(hit.key) { mutableStateOf(false) }
++    val scale by animateFloatAsState(
++        targetValue = if (focused) 1.025f else 1f,
++        label = "searchResultScale",
++    )
+     Surface(
+         shape = RoundedCornerShape(12.dp),
+-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
++        color = if (focused) {
++            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f)
++        } else {
++            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
++        },
++        border = if (focused) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null,
++        shadowElevation = if (focused) 9.dp else 0.dp,
++        modifier = Modifier
++            .fillMaxWidth()
++            .graphicsLayer { scaleX = scale; scaleY = scale }
++            .onFocusChanged { focused = it.isFocused }
++            .clickable(onClick = onClick),
+     ) {
+         Row(
+             modifier = Modifier.fillMaxWidth().padding(8.dp),
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/theme/Color.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/theme/Color.kt
+index 174cd80..e7963e2 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/theme/Color.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/theme/Color.kt
+@@ -2,10 +2,16 @@ package dev.android.anotheriptvplayer.ui.theme
+ 
+ import androidx.compose.ui.graphics.Color
+ 
+-val Purple80 = Color(0xFFD0BCFF)
+-val PurpleGrey80 = Color(0xFFCCC2DC)
+-val Pink80 = Color(0xFFEFB8C8)
++val Purple80 = Color(0xFFB9A4FF)
++val PurpleGrey80 = Color(0xFFC7CAD6)
++val Pink80 = Color(0xFF70E3D2)
+ 
+-val Purple40 = Color(0xFF6650A4)
+-val PurpleGrey40 = Color(0xFF625B71)
+-val Pink40 = Color(0xFF7D5260)
++val Purple40 = Color(0xFF7357D8)
++val PurpleGrey40 = Color(0xFF555A6B)
++val Pink40 = Color(0xFF168F82)
++
++val PremiumBackground = Color(0xFF07080C)
++val PremiumSurface = Color(0xFF11141C)
++val PremiumSurfaceVariant = Color(0xFF1A1E29)
++val PremiumOnSurface = Color(0xFFF6F7FB)
++val PremiumOnSurfaceVariant = Color(0xFFB3B8C7)
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/theme/Theme.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/theme/Theme.kt
+index 0989727..29c6723 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/theme/Theme.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/theme/Theme.kt
+@@ -14,6 +14,12 @@ private val DarkColorScheme = darkColorScheme(
+     primary = Purple80,
+     secondary = PurpleGrey80,
+     tertiary = Pink80,
++    background = PremiumBackground,
++    surface = PremiumSurface,
++    surfaceVariant = PremiumSurfaceVariant,
++    onBackground = PremiumOnSurface,
++    onSurface = PremiumOnSurface,
++    onSurfaceVariant = PremiumOnSurfaceVariant,
+ )
+ 
+ private val LightColorScheme = lightColorScheme(
+@@ -26,7 +32,7 @@ private val LightColorScheme = lightColorScheme(
+ fun AnotherIptvPlayerTheme(
+     darkTheme: Boolean = isSystemInDarkTheme(),
+     // Dynamic color is available on Android 12+
+-    dynamicColor: Boolean = true,
++    dynamicColor: Boolean = false,
+     content: @Composable () -> Unit,
+ ) {
+     val colorScheme = when {
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/theme/Type.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/theme/Type.kt
+index 341d6d3..2b6f7e1 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/theme/Type.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/theme/Type.kt
+@@ -1,5 +1,53 @@
+ package dev.android.anotheriptvplayer.ui.theme
+ 
+ import androidx.compose.material3.Typography
++import androidx.compose.ui.text.TextStyle
++import androidx.compose.ui.text.font.FontFamily
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.unit.sp
+ 
+-val Typography = Typography()
++/** A restrained system-font scale that remains sharp at television distance. */
++val Typography = Typography(
++    displayLarge = TextStyle(
++        fontFamily = FontFamily.SansSerif,
++        fontWeight = FontWeight.Bold,
++        fontSize = 46.sp,
++        lineHeight = 50.sp,
++    ),
++    headlineLarge = TextStyle(
++        fontFamily = FontFamily.SansSerif,
++        fontWeight = FontWeight.Bold,
++        fontSize = 34.sp,
++        lineHeight = 39.sp,
++    ),
++    titleLarge = TextStyle(
++        fontFamily = FontFamily.SansSerif,
++        fontWeight = FontWeight.SemiBold,
++        fontSize = 22.sp,
++        lineHeight = 28.sp,
++    ),
++    titleMedium = TextStyle(
++        fontFamily = FontFamily.SansSerif,
++        fontWeight = FontWeight.SemiBold,
++        fontSize = 17.sp,
++        lineHeight = 22.sp,
++    ),
++    bodyLarge = TextStyle(
++        fontFamily = FontFamily.SansSerif,
++        fontWeight = FontWeight.Normal,
++        fontSize = 16.sp,
++        lineHeight = 23.sp,
++    ),
++    bodyMedium = TextStyle(
++        fontFamily = FontFamily.SansSerif,
++        fontWeight = FontWeight.Normal,
++        fontSize = 14.sp,
++        lineHeight = 20.sp,
++    ),
++    labelLarge = TextStyle(
++        fontFamily = FontFamily.SansSerif,
++        fontWeight = FontWeight.SemiBold,
++        fontSize = 14.sp,
++        lineHeight = 18.sp,
++    ),
++)
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/PremiumTvDashboardScreen.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/PremiumTvDashboardScreen.kt
+new file mode 100644
+index 0000000..46470df
+--- /dev/null
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/PremiumTvDashboardScreen.kt
+@@ -0,0 +1,315 @@
++package dev.android.anotheriptvplayer.ui.tv
++
++import androidx.activity.compose.BackHandler
++import androidx.compose.foundation.background
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.padding
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.filled.ErrorOutline
++import androidx.compose.material3.CircularProgressIndicator
++import androidx.compose.material3.Icon
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.rememberCoroutineScope
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.graphics.Brush
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.unit.sp
++import androidx.lifecycle.compose.collectAsStateWithLifecycle
++import dev.android.anotheriptvplayer.AnotherIptvPlayerApp
++import dev.android.anotheriptvplayer.R
++import dev.android.anotheriptvplayer.data.CatalogRefreshPolicy
++import dev.android.anotheriptvplayer.data.EpisodeUpdateDetector
++import dev.android.anotheriptvplayer.data.EpisodeUpdateReadStore
++import dev.android.anotheriptvplayer.model.Playlist
++import dev.android.anotheriptvplayer.ui.LocalHiddenCategoryStore
++import dev.android.anotheriptvplayer.ui.LocalPlaylistContentStore
++import dev.android.anotheriptvplayer.ui.LocalPlaylistRepository
++import dev.android.anotheriptvplayer.ui.settings.PlaylistSettingsBody
++import kotlinx.coroutines.launch
++
++/**
++ * Android TV home built around a ten-foot/D-pad interaction model.
++ *
++ * The networking, Room database and player remain shared with the mobile
++ * client. Only the presentation and navigation shell are TV-specific, which
++ * lets the fork keep receiving parser/player fixes without coupling the TV UI
++ * to the phone layout.
++ */
++@Composable
++fun PremiumTvDashboardScreen(
++    playlistId: String,
++    onBack: () -> Unit,
++    onOpenMovie: (Int) -> Unit,
++    onPlayMovie: (Int) -> Unit,
++    onOpenSeries: (Int) -> Unit,
++    onOpenLiveCategory: (String) -> Unit,
++    onOpenVodCategory: (String) -> Unit,
++    onOpenSeriesCategory: (String) -> Unit,
++    onPlayLive: (Int) -> Unit,
++    onOpenDownloads: () -> Unit,
++    onOpenHistory: () -> Unit,
++    onOpenSearch: () -> Unit,
++    onResumeEpisode: (String) -> Unit,
++    appVersion: String,
++) {
++    val context = androidx.compose.ui.platform.LocalContext.current
++    val app = context.applicationContext as AnotherIptvPlayerApp
++    val repository = LocalPlaylistRepository.current
++    val contentStore = LocalPlaylistContentStore.current
++    val hiddenStore = LocalHiddenCategoryStore.current
++    val scope = rememberCoroutineScope()
++
++    var playlist by remember(playlistId) { mutableStateOf<Playlist?>(null) }
++    var destination by remember { mutableStateOf(TvDestination.Home) }
++    var settingsVisible by remember { mutableStateOf(false) }
++    var notificationPanelVisible by remember { mutableStateOf(false) }
++    var isAutoRefreshing by remember { mutableStateOf(false) }
++
++    val refreshPolicy = remember(context) { CatalogRefreshPolicy(context) }
++    val updateReadStore = remember(context) { EpisodeUpdateReadStore(context) }
++    var readSignatures by remember(playlistId) {
++        mutableStateOf(updateReadStore.readSignatures(playlistId))
++    }
++
++    val isLoading by contentStore.isLoading.collectAsStateWithLifecycle()
++    val loadingMessage by contentStore.loadingMessage.collectAsStateWithLifecycle()
++    val loadError by contentStore.loadError.collectAsStateWithLifecycle()
++    val liveCategories by contentStore.liveCategories.collectAsStateWithLifecycle()
++    val movieCategories by contentStore.vodCategories.collectAsStateWithLifecycle()
++    val seriesCategories by contentStore.seriesCategories.collectAsStateWithLifecycle()
++    val liveByCategory by contentStore.liveStreamsByCategoryId.collectAsStateWithLifecycle()
++    val moviesByCategory by contentStore.vodStreamsByCategoryId.collectAsStateWithLifecycle()
++    val seriesByCategory by contentStore.seriesItemsByCategoryId.collectAsStateWithLifecycle()
++    val movies by contentStore.vodStreams.collectAsStateWithLifecycle()
++    val series by contentStore.seriesItems.collectAsStateWithLifecycle()
++    val history by app.appDatabaseForDownloads
++        .watchHistoryDao()
++        .observeRecent(playlistId, limit = 80)
++        .collectAsStateWithLifecycle(initialValue = emptyList())
++
++    val hiddenLive by hiddenStore.observeHidden(playlistId, "live")
++        .collectAsStateWithLifecycle(initialValue = hiddenStore.hiddenIds(playlistId, "live"))
++    val hiddenMovies by hiddenStore.observeHidden(playlistId, "vod")
++        .collectAsStateWithLifecycle(initialValue = hiddenStore.hiddenIds(playlistId, "vod"))
++    val hiddenSeries by hiddenStore.observeHidden(playlistId, "series")
++        .collectAsStateWithLifecycle(initialValue = hiddenStore.hiddenIds(playlistId, "series"))
++
++    val visibleLiveCategories = remember(liveCategories, hiddenLive) {
++        liveCategories.filter { it.id !in hiddenLive }
++    }
++    val visibleMovieCategories = remember(movieCategories, hiddenMovies) {
++        movieCategories.filter { it.id !in hiddenMovies }
++    }
++    val visibleSeriesCategories = remember(seriesCategories, hiddenSeries) {
++        seriesCategories.filter { it.id !in hiddenSeries }
++    }
++
++    val updates = remember(series, history, readSignatures) {
++        EpisodeUpdateDetector.detect(series, history, readSignatures)
++    }
++    val unreadCount = remember(updates) { updates.count { it.isUnread } }
++
++    LaunchedEffect(playlistId) {
++        val resolved = repository.find(playlistId)
++        playlist = resolved
++        if (resolved == null) return@LaunchedEffect
++
++        val hadRefreshBaseline = refreshPolicy.hasBaseline(playlistId)
++        contentStore.loadPlaylistSuspending(resolved)
++
++        // The bootstrap already fetched the full catalog. Establish a
++        // baseline rather than downloading it twice on first TV launch.
++        if (!hadRefreshBaseline) {
++            refreshPolicy.markRefreshed(playlistId)
++        } else if (refreshPolicy.shouldRefresh(playlistId)) {
++            isAutoRefreshing = true
++            runCatching {
++                contentStore.syncFromNetworkReplacingLocal(resolved) { }
++                contentStore.reloadFromDatabase(playlistId)
++                refreshPolicy.markRefreshed(playlistId)
++            }
++            isAutoRefreshing = false
++        }
++    }
++
++    BackHandler(
++        enabled = !notificationPanelVisible &&
++            (settingsVisible || destination != TvDestination.Home),
++    ) {
++        when {
++            settingsVisible -> settingsVisible = false
++            destination != TvDestination.Home -> destination = TvDestination.Home
++            else -> onBack()
++        }
++    }
++
++    Box(
++        modifier = Modifier
++            .fillMaxSize()
++            .background(
++                Brush.verticalGradient(
++                    listOf(TvCanvas, androidx.compose.ui.graphics.Color(0xFF090B11), TvCanvas),
++                ),
++            ),
++    ) {
++        when {
++            loadError != null && movies.isEmpty() && series.isEmpty() && liveByCategory.isEmpty() -> {
++                TvLoadError(
++                    message = loadError ?: stringResource(R.string.error_generic),
++                    onRetry = {
++                        playlist?.let { current ->
++                            scope.launch { contentStore.loadPlaylistSuspending(current) }
++                        }
++                    },
++                )
++            }
++
++            isLoading && movies.isEmpty() && series.isEmpty() && liveByCategory.isEmpty() -> {
++                TvLoadingState(message = loadingMessage)
++            }
++
++            settingsVisible -> {
++                PlaylistSettingsBody(
++                    playlistId = playlistId,
++                    appVersion = appVersion,
++                    onOpenDownloads = onOpenDownloads,
++                    onOpenHistory = onOpenHistory,
++                    modifier = Modifier.fillMaxSize().padding(top = 88.dp, start = 36.dp, end = 36.dp),
++                )
++            }
++
++            destination == TvDestination.Home -> {
++                TvHomeScreen(
++                    movies = movies,
++                    series = series,
++                    history = history,
++                    onOpenMovie = onOpenMovie,
++                    onPlayMovie = onPlayMovie,
++                    onOpenSeries = onOpenSeries,
++                    onResumeHistory = { row ->
++                        when (row.type) {
++                            "vod" -> row.streamId.toIntOrNull()?.let(onPlayMovie)
++                            "series" -> onResumeEpisode(row.streamId)
++                            "live" -> row.streamId.toIntOrNull()?.let(onPlayLive)
++                        }
++                    },
++                    onShowMovies = {
++                        settingsVisible = false
++                        destination = TvDestination.Movies
++                    },
++                    onShowSeries = {
++                        settingsVisible = false
++                        destination = TvDestination.Series
++                    },
++                )
++            }
++
++            else -> {
++                val categories = when (destination) {
++                    TvDestination.Live -> visibleLiveCategories
++                    TvDestination.Movies -> visibleMovieCategories
++                    TvDestination.Series -> visibleSeriesCategories
++                    TvDestination.Home -> emptyList()
++                }
++                TvCatalogScreen(
++                    destination = destination,
++                    categories = categories,
++                    liveByCategory = liveByCategory,
++                    moviesByCategory = moviesByCategory,
++                    seriesByCategory = seriesByCategory,
++                    onOpenLiveCategory = onOpenLiveCategory,
++                    onOpenMovieCategory = onOpenVodCategory,
++                    onOpenSeriesCategory = onOpenSeriesCategory,
++                    onPlayLive = onPlayLive,
++                    onOpenMovie = onOpenMovie,
++                    onOpenSeries = onOpenSeries,
++                )
++            }
++        }
++
++        TvTopNavigation(
++            destination = destination,
++            unreadCount = unreadCount,
++            isRefreshing = isAutoRefreshing,
++            onDestination = {
++                settingsVisible = false
++                destination = it
++            },
++            onSearch = onOpenSearch,
++            onNotifications = { notificationPanelVisible = true },
++            onSettings = { settingsVisible = true },
++            modifier = Modifier.align(Alignment.TopCenter),
++        )
++
++        EpisodeUpdatesOverlay(
++            visible = notificationPanelVisible,
++            updates = updates,
++            unreadCount = unreadCount,
++            onDismiss = { notificationPanelVisible = false },
++            onMarkAllRead = {
++                readSignatures = updateReadStore.markRead(
++                    playlistId,
++                    updates.map { it.signature },
++                )
++            },
++            onOpenSeries = { update ->
++                readSignatures = updateReadStore.markRead(playlistId, listOf(update.signature))
++                notificationPanelVisible = false
++                onOpenSeries(update.seriesId)
++            },
++        )
++    }
++}
++
++@Composable
++private fun TvLoadingState(message: String?) {
++    Column(
++        modifier = Modifier.fillMaxSize(),
++        horizontalAlignment = Alignment.CenterHorizontally,
++        verticalArrangement = Arrangement.Center,
++    ) {
++        CircularProgressIndicator(color = TvAccentMint)
++        Text(
++            text = message ?: stringResource(R.string.common_loading),
++            color = TvTextSecondary,
++            fontSize = 14.sp,
++            modifier = Modifier.padding(top = 16.dp),
++        )
++    }
++}
++
++@Composable
++private fun TvLoadError(message: String, onRetry: () -> Unit) {
++    Column(
++        modifier = Modifier.fillMaxSize().padding(48.dp),
++        horizontalAlignment = Alignment.CenterHorizontally,
++        verticalArrangement = Arrangement.Center,
++    ) {
++        Icon(
++            imageVector = Icons.Default.ErrorOutline,
++            contentDescription = null,
++            tint = androidx.compose.ui.graphics.Color(0xFFFF7A85),
++        )
++        Spacer(Modifier.height(12.dp))
++        Text(text = message, color = TvTextPrimary, fontSize = 15.sp)
++        Spacer(Modifier.height(18.dp))
++        TvActionButton(
++            text = stringResource(R.string.common_retry),
++            onClick = onRetry,
++            primary = true,
++        )
++    }
++}
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvComponents.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvComponents.kt
+new file mode 100644
+index 0000000..58c760e
+--- /dev/null
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvComponents.kt
+@@ -0,0 +1,830 @@
++package dev.android.anotheriptvplayer.ui.tv
++
++import android.text.format.DateUtils
++import androidx.activity.compose.BackHandler
++import androidx.compose.animation.AnimatedVisibility
++import androidx.compose.animation.core.animateFloatAsState
++import androidx.compose.animation.core.spring
++import androidx.compose.animation.fadeIn
++import androidx.compose.animation.fadeOut
++import androidx.compose.animation.slideInHorizontally
++import androidx.compose.animation.slideOutHorizontally
++import androidx.compose.foundation.BorderStroke
++import androidx.compose.foundation.background
++import androidx.compose.foundation.border
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.focusable
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.PaddingValues
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxHeight
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.lazy.LazyRow
++import androidx.compose.foundation.lazy.items
++import androidx.compose.foundation.shape.CircleShape
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.automirrored.filled.ArrowForward
++import androidx.compose.material.icons.filled.Check
++import androidx.compose.material.icons.filled.Close
++import androidx.compose.material.icons.filled.LiveTv
++import androidx.compose.material.icons.filled.Movie
++import androidx.compose.material.icons.filled.NotificationsNone
++import androidx.compose.material.icons.filled.PlayArrow
++import androidx.compose.material.icons.filled.Tv
++import androidx.compose.material3.Icon
++import androidx.compose.material3.LinearProgressIndicator
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.draw.clip
++import androidx.compose.ui.draw.shadow
++import androidx.compose.ui.focus.FocusRequester
++import androidx.compose.ui.focus.focusRequester
++import androidx.compose.ui.focus.onFocusChanged
++import androidx.compose.ui.graphics.Brush
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.graphics.graphicsLayer
++import androidx.compose.ui.graphics.vector.ImageVector
++import androidx.compose.ui.layout.ContentScale
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.text.style.TextOverflow
++import androidx.compose.ui.unit.Dp
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.unit.sp
++import coil.compose.AsyncImage
++import dev.android.anotheriptvplayer.R
++import dev.android.anotheriptvplayer.data.EpisodeUpdate
++import dev.android.anotheriptvplayer.data.local.WatchHistoryEntity
++
++internal val TvCanvas = Color(0xFF07080C)
++internal val TvSurface = Color(0xFF11141C)
++internal val TvSurfaceRaised = Color(0xFF191D28)
++internal val TvTextPrimary = Color(0xFFF6F7FB)
++internal val TvTextSecondary = Color(0xFFB3B8C7)
++internal val TvAccent = Color(0xFF9A7BFF)
++internal val TvAccentMint = Color(0xFF5FE0CE)
++
++internal enum class TvDestination(val labelRes: Int) {
++    Home(R.string.tv_nav_home),
++    Live(R.string.tv_nav_live),
++    Movies(R.string.tv_nav_movies),
++    Series(R.string.tv_nav_series),
++}
++
++@Composable
++internal fun TvTopNavigation(
++    destination: TvDestination,
++    unreadCount: Int,
++    isRefreshing: Boolean,
++    onDestination: (TvDestination) -> Unit,
++    onSearch: () -> Unit,
++    onNotifications: () -> Unit,
++    onSettings: () -> Unit,
++    modifier: Modifier = Modifier,
++) {
++    Row(
++        modifier = modifier
++            .fillMaxWidth()
++            .height(82.dp)
++            .background(
++                Brush.verticalGradient(
++                    listOf(TvCanvas.copy(alpha = 0.98f), TvCanvas.copy(alpha = 0.82f), Color.Transparent),
++                ),
++            )
++            .padding(horizontal = 48.dp, vertical = 14.dp),
++        verticalAlignment = Alignment.CenterVertically,
++    ) {
++        Row(verticalAlignment = Alignment.CenterVertically) {
++            Box(
++                modifier = Modifier
++                    .size(34.dp)
++                    .clip(RoundedCornerShape(11.dp))
++                    .background(Brush.linearGradient(listOf(TvAccent, TvAccentMint))),
++                contentAlignment = Alignment.Center,
++            ) {
++                Icon(
++                    imageVector = Icons.Default.PlayArrow,
++                    contentDescription = null,
++                    tint = Color.White,
++                    modifier = Modifier.size(23.dp),
++                )
++            }
++            Spacer(Modifier.width(11.dp))
++            Text(
++                text = stringResource(R.string.tv_brand),
++                color = TvTextPrimary,
++                fontWeight = FontWeight.Bold,
++                fontSize = 20.sp,
++                letterSpacing = 0.4.sp,
++            )
++        }
++
++        Spacer(Modifier.width(38.dp))
++        TvDestination.entries.forEach { item ->
++            TvNavItem(
++                text = stringResource(item.labelRes),
++                selected = item == destination,
++                onClick = { onDestination(item) },
++            )
++            Spacer(Modifier.width(4.dp))
++        }
++
++        Spacer(Modifier.weight(1f))
++        if (isRefreshing) {
++            Text(
++                text = stringResource(R.string.tv_refreshing),
++                color = TvTextSecondary,
++                style = MaterialTheme.typography.labelMedium,
++                modifier = Modifier.padding(end = 12.dp),
++            )
++        }
++        TvHeaderIcon(
++            icon = androidx.compose.material.icons.Icons.Default.Search,
++            contentDescription = stringResource(R.string.tv_search),
++            onClick = onSearch,
++        )
++        Spacer(Modifier.width(8.dp))
++        TvHeaderIcon(
++            icon = Icons.Default.NotificationsNone,
++            contentDescription = stringResource(R.string.tv_notifications),
++            badge = unreadCount,
++            onClick = onNotifications,
++        )
++        Spacer(Modifier.width(8.dp))
++        TvHeaderIcon(
++            icon = androidx.compose.material.icons.Icons.Default.Settings,
++            contentDescription = stringResource(R.string.tv_settings),
++            onClick = onSettings,
++        )
++    }
++}
++
++@Composable
++private fun TvNavItem(text: String, selected: Boolean, onClick: () -> Unit) {
++    var focused by remember { mutableStateOf(false) }
++    val alpha by animateFloatAsState(
++        targetValue = if (selected || focused) 1f else 0.68f,
++        label = "navAlpha",
++    )
++    Box(
++        modifier = Modifier
++            .onFocusChanged { focused = it.isFocused }
++            .clip(RoundedCornerShape(18.dp))
++            .background(
++                when {
++                    focused -> Color.White.copy(alpha = 0.14f)
++                    selected -> Color.White.copy(alpha = 0.08f)
++                    else -> Color.Transparent
++                },
++            )
++            .clickable(onClick = onClick)
++            .focusable()
++            .padding(horizontal = 15.dp, vertical = 9.dp),
++        contentAlignment = Alignment.Center,
++    ) {
++        Text(
++            text = text,
++            color = TvTextPrimary.copy(alpha = alpha),
++            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
++            fontSize = 14.sp,
++        )
++    }
++}
++
++@Composable
++internal fun TvHeaderIcon(
++    icon: ImageVector,
++    contentDescription: String,
++    onClick: () -> Unit,
++    modifier: Modifier = Modifier,
++    badge: Int = 0,
++    focusRequester: FocusRequester? = null,
++) {
++    var focused by remember { mutableStateOf(false) }
++    Box(
++        modifier = modifier
++            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
++            .size(42.dp)
++            .onFocusChanged { focused = it.isFocused }
++            .clip(CircleShape)
++            .background(if (focused) Color.White else Color.White.copy(alpha = 0.09f))
++            .clickable(onClick = onClick)
++            .focusable(),
++        contentAlignment = Alignment.Center,
++    ) {
++        Icon(
++            imageVector = icon,
++            contentDescription = contentDescription,
++            tint = if (focused) TvCanvas else TvTextPrimary,
++            modifier = Modifier.size(21.dp),
++        )
++        if (badge > 0) {
++            Box(
++                modifier = Modifier
++                    .align(Alignment.TopEnd)
++                    .size(if (badge > 9) 19.dp else 17.dp)
++                    .clip(CircleShape)
++                    .background(Color(0xFFFF5A68)),
++                contentAlignment = Alignment.Center,
++            ) {
++                Text(
++                    text = if (badge > 9) "9+" else badge.toString(),
++                    color = Color.White,
++                    fontSize = 9.sp,
++                    fontWeight = FontWeight.Bold,
++                )
++            }
++        }
++    }
++}
++
++@Composable
++internal fun TvActionButton(
++    text: String,
++    onClick: () -> Unit,
++    modifier: Modifier = Modifier,
++    icon: ImageVector? = null,
++    primary: Boolean = false,
++) {
++    var focused by remember { mutableStateOf(false) }
++    val scale by animateFloatAsState(
++        targetValue = if (focused) 1.055f else 1f,
++        animationSpec = spring(stiffness = 620f, dampingRatio = 0.78f),
++        label = "actionScale",
++    )
++    Row(
++        modifier = modifier
++            .graphicsLayer { scaleX = scale; scaleY = scale }
++            .onFocusChanged { focused = it.isFocused }
++            .clip(RoundedCornerShape(10.dp))
++            .background(
++                when {
++                    focused -> Color.White
++                    primary -> TvTextPrimary.copy(alpha = 0.94f)
++                    else -> Color.White.copy(alpha = 0.14f)
++                },
++            )
++            .border(
++                BorderStroke(1.dp, if (focused) Color.White else Color.White.copy(alpha = 0.16f)),
++                RoundedCornerShape(10.dp),
++            )
++            .clickable(onClick = onClick)
++            .focusable()
++            .padding(horizontal = 19.dp, vertical = 11.dp),
++        horizontalArrangement = Arrangement.Center,
++        verticalAlignment = Alignment.CenterVertically,
++    ) {
++        icon?.let {
++            Icon(
++                imageVector = it,
++                contentDescription = null,
++                tint = if (focused || primary) TvCanvas else TvTextPrimary,
++                modifier = Modifier.size(20.dp),
++            )
++            Spacer(Modifier.width(8.dp))
++        }
++        Text(
++            text = text,
++            color = if (focused || primary) TvCanvas else TvTextPrimary,
++            fontWeight = FontWeight.SemiBold,
++            fontSize = 14.sp,
++        )
++    }
++}
++
++@Composable
++internal fun TvShelf(
++    title: String,
++    modifier: Modifier = Modifier,
++    subtitle: String? = null,
++    onSeeAll: (() -> Unit)? = null,
++    content: @Composable () -> Unit,
++) {
++    Column(modifier = modifier.fillMaxWidth()) {
++        Row(
++            modifier = Modifier
++                .fillMaxWidth()
++                .padding(horizontal = 48.dp, vertical = 8.dp),
++            verticalAlignment = Alignment.CenterVertically,
++        ) {
++            Column(modifier = Modifier.weight(1f)) {
++                Text(
++                    text = title,
++                    color = TvTextPrimary,
++                    fontSize = 21.sp,
++                    fontWeight = FontWeight.SemiBold,
++                )
++                subtitle?.let {
++                    Text(
++                        text = it,
++                        color = TvTextSecondary,
++                        fontSize = 12.sp,
++                        modifier = Modifier.padding(top = 2.dp),
++                    )
++                }
++            }
++            onSeeAll?.let { action ->
++                TvActionButton(
++                    text = stringResource(R.string.tv_see_all),
++                    onClick = action,
++                    icon = Icons.AutoMirrored.Filled.ArrowForward,
++                )
++            }
++        }
++        content()
++    }
++}
++
++@Composable
++internal fun TvPosterCard(
++    title: String,
++    imageUrl: String?,
++    onClick: () -> Unit,
++    modifier: Modifier = Modifier,
++    eyebrow: String? = null,
++    width: Dp = 154.dp,
++) {
++    var focused by remember { mutableStateOf(false) }
++    val scale by animateFloatAsState(
++        targetValue = if (focused) 1.075f else 1f,
++        animationSpec = spring(stiffness = 520f, dampingRatio = 0.78f),
++        label = "posterScale",
++    )
++    Column(
++        modifier = modifier
++            .width(width)
++            .graphicsLayer {
++                scaleX = scale
++                scaleY = scale
++            }
++            .onFocusChanged { focused = it.isFocused }
++            .clickable(onClick = onClick)
++            .focusable(),
++    ) {
++        Box(
++            modifier = Modifier
++                .fillMaxWidth()
++                .height(width * 1.48f)
++                .shadow(if (focused) 18.dp else 3.dp, RoundedCornerShape(13.dp))
++                .clip(RoundedCornerShape(13.dp))
++                .background(TvSurfaceRaised)
++                .border(
++                    width = if (focused) 2.dp else 1.dp,
++                    color = if (focused) Color.White else Color.White.copy(alpha = 0.08f),
++                    shape = RoundedCornerShape(13.dp),
++                ),
++        ) {
++            if (!imageUrl.isNullOrBlank()) {
++                AsyncImage(
++                    model = imageUrl,
++                    contentDescription = title,
++                    modifier = Modifier.fillMaxSize(),
++                    contentScale = ContentScale.Crop,
++                )
++            } else {
++                Icon(
++                    imageVector = Icons.Default.Movie,
++                    contentDescription = null,
++                    tint = TvTextSecondary.copy(alpha = 0.45f),
++                    modifier = Modifier.size(42.dp).align(Alignment.Center),
++                )
++            }
++            Box(
++                modifier = Modifier
++                    .fillMaxSize()
++                    .background(
++                        Brush.verticalGradient(
++                            0.54f to Color.Transparent,
++                            1f to TvCanvas.copy(alpha = 0.92f),
++                        ),
++                    ),
++            )
++            eyebrow?.takeIf { it.isNotBlank() }?.let {
++                Text(
++                    text = it,
++                    color = TvTextPrimary,
++                    fontSize = 10.sp,
++                    fontWeight = FontWeight.SemiBold,
++                    modifier = Modifier
++                        .align(Alignment.TopStart)
++                        .padding(9.dp)
++                        .clip(RoundedCornerShape(6.dp))
++                        .background(TvCanvas.copy(alpha = 0.72f))
++                        .padding(horizontal = 7.dp, vertical = 4.dp),
++                    maxLines = 1,
++                )
++            }
++        }
++        Text(
++            text = title,
++            color = if (focused) TvTextPrimary else TvTextPrimary.copy(alpha = 0.88f),
++            fontSize = 13.sp,
++            fontWeight = if (focused) FontWeight.SemiBold else FontWeight.Medium,
++            maxLines = 1,
++            overflow = TextOverflow.Ellipsis,
++            modifier = Modifier.padding(top = 9.dp, start = 2.dp, end = 2.dp),
++        )
++    }
++}
++
++@Composable
++internal fun TvLandscapeCard(
++    title: String,
++    imageUrl: String?,
++    onClick: () -> Unit,
++    modifier: Modifier = Modifier,
++    subtitle: String? = null,
++    progress: Float? = null,
++    icon: ImageVector = Icons.Default.PlayArrow,
++) {
++    var focused by remember { mutableStateOf(false) }
++    val scale by animateFloatAsState(
++        targetValue = if (focused) 1.06f else 1f,
++        animationSpec = spring(stiffness = 540f, dampingRatio = 0.8f),
++        label = "landscapeScale",
++    )
++    Column(
++        modifier = modifier
++            .width(248.dp)
++            .graphicsLayer { scaleX = scale; scaleY = scale }
++            .onFocusChanged { focused = it.isFocused }
++            .clickable(onClick = onClick)
++            .focusable(),
++    ) {
++        Box(
++            modifier = Modifier
++                .fillMaxWidth()
++                .height(140.dp)
++                .shadow(if (focused) 16.dp else 2.dp, RoundedCornerShape(12.dp))
++                .clip(RoundedCornerShape(12.dp))
++                .background(TvSurfaceRaised)
++                .border(
++                    if (focused) 2.dp else 1.dp,
++                    if (focused) Color.White else Color.White.copy(alpha = 0.08f),
++                    RoundedCornerShape(12.dp),
++                ),
++        ) {
++            if (!imageUrl.isNullOrBlank()) {
++                AsyncImage(
++                    model = imageUrl,
++                    contentDescription = title,
++                    modifier = Modifier.fillMaxSize(),
++                    contentScale = ContentScale.Crop,
++                )
++            } else {
++                Icon(
++                    imageVector = icon,
++                    contentDescription = null,
++                    tint = TvTextSecondary.copy(alpha = 0.5f),
++                    modifier = Modifier.size(40.dp).align(Alignment.Center),
++                )
++            }
++            Box(
++                modifier = Modifier
++                    .fillMaxSize()
++                    .background(Brush.verticalGradient(listOf(Color.Transparent, TvCanvas.copy(alpha = 0.62f)))),
++            )
++            progress?.coerceIn(0f, 1f)?.let { fraction ->
++                LinearProgressIndicator(
++                    progress = { fraction },
++                    color = TvAccentMint,
++                    trackColor = Color.White.copy(alpha = 0.24f),
++                    modifier = Modifier.fillMaxWidth().height(4.dp).align(Alignment.BottomCenter),
++                )
++            }
++        }
++        Text(
++            text = title,
++            color = TvTextPrimary,
++            fontSize = 13.sp,
++            fontWeight = FontWeight.SemiBold,
++            maxLines = 1,
++            overflow = TextOverflow.Ellipsis,
++            modifier = Modifier.padding(top = 8.dp),
++        )
++        subtitle?.takeIf { it.isNotBlank() }?.let {
++            Text(
++                text = it,
++                color = TvTextSecondary,
++                fontSize = 11.sp,
++                maxLines = 1,
++                overflow = TextOverflow.Ellipsis,
++                modifier = Modifier.padding(top = 2.dp),
++            )
++        }
++    }
++}
++
++@Composable
++internal fun ContinueWatchingRail(
++    rows: List<WatchHistoryEntity>,
++    onOpen: (WatchHistoryEntity) -> Unit,
++) {
++    if (rows.isEmpty()) return
++    TvShelf(title = stringResource(R.string.shelf_continue_watching)) {
++        LazyRow(
++            contentPadding = PaddingValues(horizontal = 48.dp, vertical = 10.dp),
++            horizontalArrangement = Arrangement.spacedBy(18.dp),
++        ) {
++            items(rows, key = { it.id }) { row ->
++                val progress = if (row.type != "live" && row.durationMs > 0L) {
++                    row.lastTimeMs.toFloat() / row.durationMs.toFloat()
++                } else null
++                TvLandscapeCard(
++                    title = row.secondaryTitle ?: row.title,
++                    subtitle = if (row.secondaryTitle != null) row.title else null,
++                    imageUrl = row.imageUrl,
++                    progress = progress,
++                    icon = when (row.type) {
++                        "live" -> Icons.Default.LiveTv
++                        "series" -> Icons.Default.Tv
++                        else -> Icons.Default.Movie
++                    },
++                    onClick = { onOpen(row) },
++                )
++            }
++        }
++    }
++}
++
++@Composable
++internal fun EpisodeUpdatesOverlay(
++    visible: Boolean,
++    updates: List<EpisodeUpdate>,
++    unreadCount: Int,
++    onDismiss: () -> Unit,
++    onMarkAllRead: () -> Unit,
++    onOpenSeries: (EpisodeUpdate) -> Unit,
++) {
++    BackHandler(enabled = visible, onBack = onDismiss)
++    AnimatedVisibility(
++        visible = visible,
++        enter = fadeIn() + slideInHorizontally(initialOffsetX = { it }),
++        exit = fadeOut() + slideOutHorizontally(targetOffsetX = { it }),
++    ) {
++        Box(modifier = Modifier.fillMaxSize()) {
++            Box(
++                modifier = Modifier
++                    .fillMaxSize()
++                    .background(Color.Black.copy(alpha = 0.48f))
++                    .clickable(onClick = onDismiss),
++            )
++            EpisodeUpdatesDrawer(
++                updates = updates,
++                unreadCount = unreadCount,
++                onDismiss = onDismiss,
++                onMarkAllRead = onMarkAllRead,
++                onOpenSeries = onOpenSeries,
++                modifier = Modifier.align(Alignment.CenterEnd),
++            )
++        }
++    }
++}
++
++@Composable
++private fun EpisodeUpdatesDrawer(
++    updates: List<EpisodeUpdate>,
++    unreadCount: Int,
++    onDismiss: () -> Unit,
++    onMarkAllRead: () -> Unit,
++    onOpenSeries: (EpisodeUpdate) -> Unit,
++    modifier: Modifier = Modifier,
++) {
++    val closeFocus = remember { FocusRequester() }
++    LaunchedEffect(Unit) { closeFocus.requestFocus() }
++
++    Column(
++        modifier = modifier
++            .width(440.dp)
++            .fillMaxHeight()
++            .shadow(28.dp)
++            .background(
++                Brush.verticalGradient(
++                    listOf(Color(0xFF171A24), Color(0xFF0C0E14)),
++                ),
++            )
++            .padding(top = 28.dp, bottom = 24.dp),
++    ) {
++        Row(
++            modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp),
++            verticalAlignment = Alignment.CenterVertically,
++        ) {
++            Column(modifier = Modifier.weight(1f)) {
++                Text(
++                    text = stringResource(R.string.tv_notifications),
++                    color = TvTextPrimary,
++                    fontWeight = FontWeight.Bold,
++                    fontSize = 25.sp,
++                )
++                Text(
++                    text = if (unreadCount == 0) {
++                        stringResource(R.string.tv_notifications_caught_up)
++                    } else {
++                        stringResource(R.string.tv_notifications_unread, unreadCount)
++                    },
++                    color = TvTextSecondary,
++                    fontSize = 12.sp,
++                    modifier = Modifier.padding(top = 3.dp),
++                )
++            }
++            TvHeaderIcon(
++                icon = Icons.Default.Close,
++                contentDescription = stringResource(R.string.common_close),
++                onClick = onDismiss,
++                focusRequester = closeFocus,
++            )
++        }
++
++        if (updates.isEmpty()) {
++            Column(
++                modifier = Modifier.fillMaxSize().padding(horizontal = 42.dp),
++                horizontalAlignment = Alignment.CenterHorizontally,
++                verticalArrangement = Arrangement.Center,
++            ) {
++                Box(
++                    modifier = Modifier.size(68.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.08f)),
++                    contentAlignment = Alignment.Center,
++                ) {
++                    Icon(
++                        imageVector = Icons.Default.NotificationsNone,
++                        contentDescription = null,
++                        tint = TvAccentMint,
++                        modifier = Modifier.size(30.dp),
++                    )
++                }
++                Text(
++                    text = stringResource(R.string.tv_notifications_empty_title),
++                    color = TvTextPrimary,
++                    fontSize = 18.sp,
++                    fontWeight = FontWeight.SemiBold,
++                    modifier = Modifier.padding(top = 18.dp),
++                )
++                Text(
++                    text = stringResource(R.string.tv_notifications_empty_body),
++                    color = TvTextSecondary,
++                    fontSize = 13.sp,
++                    lineHeight = 19.sp,
++                    modifier = Modifier.padding(top = 7.dp),
++                )
++            }
++        } else {
++            Row(
++                modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 18.dp),
++                horizontalArrangement = Arrangement.End,
++            ) {
++                if (unreadCount > 0) {
++                    TvActionButton(
++                        text = stringResource(R.string.tv_mark_all_read),
++                        icon = Icons.Default.Check,
++                        onClick = onMarkAllRead,
++                    )
++                }
++            }
++            LazyColumn(
++                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 4.dp),
++                verticalArrangement = Arrangement.spacedBy(10.dp),
++            ) {
++                items(updates, key = EpisodeUpdate::signature) { update ->
++                    EpisodeUpdateCard(update = update, onClick = { onOpenSeries(update) })
++                }
++            }
++        }
++    }
++}
++
++@Composable
++private fun EpisodeUpdateCard(update: EpisodeUpdate, onClick: () -> Unit) {
++    var focused by remember { mutableStateOf(false) }
++    val relativeTime = remember(update.modifiedAtMillis) {
++        DateUtils.getRelativeTimeSpanString(
++            update.modifiedAtMillis,
++            System.currentTimeMillis(),
++            DateUtils.MINUTE_IN_MILLIS,
++        ).toString()
++    }
++    Row(
++        modifier = Modifier
++            .fillMaxWidth()
++            .onFocusChanged { focused = it.isFocused }
++            .clip(RoundedCornerShape(14.dp))
++            .background(if (focused) Color.White.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.06f))
++            .border(
++                if (focused) 1.5.dp else 1.dp,
++                if (focused) Color.White.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.07f),
++                RoundedCornerShape(14.dp),
++            )
++            .clickable(onClick = onClick)
++            .focusable()
++            .padding(12.dp),
++        verticalAlignment = Alignment.CenterVertically,
++    ) {
++        Box(
++            modifier = Modifier
++                .width(72.dp)
++                .height(94.dp)
++                .clip(RoundedCornerShape(9.dp))
++                .background(TvSurfaceRaised),
++            contentAlignment = Alignment.Center,
++        ) {
++            if (!update.imageUrl.isNullOrBlank()) {
++                AsyncImage(
++                    model = update.imageUrl,
++                    contentDescription = update.seriesName,
++                    modifier = Modifier.fillMaxSize(),
++                    contentScale = ContentScale.Crop,
++                )
++            } else {
++                Icon(Icons.Default.Tv, contentDescription = null, tint = TvTextSecondary)
++            }
++            if (update.isUnread) {
++                Box(
++                    modifier = Modifier
++                        .align(Alignment.TopEnd)
++                        .padding(6.dp)
++                        .size(9.dp)
++                        .clip(CircleShape)
++                        .background(Color(0xFFFF5A68)),
++                )
++            }
++        }
++        Column(modifier = Modifier.weight(1f).padding(horizontal = 13.dp)) {
++            Text(
++                text = stringResource(R.string.tv_update_detected),
++                color = TvAccentMint,
++                fontSize = 10.sp,
++                fontWeight = FontWeight.Bold,
++                letterSpacing = 0.7.sp,
++            )
++            Text(
++                text = update.seriesName,
++                color = TvTextPrimary,
++                fontSize = 15.sp,
++                fontWeight = FontWeight.SemiBold,
++                maxLines = 2,
++                overflow = TextOverflow.Ellipsis,
++                modifier = Modifier.padding(top = 4.dp),
++            )
++            Text(
++                text = listOf(update.categoryName, relativeTime).filter { it.isNotBlank() }.joinToString(" • "),
++                color = TvTextSecondary,
++                fontSize = 11.sp,
++                maxLines = 1,
++                overflow = TextOverflow.Ellipsis,
++                modifier = Modifier.padding(top = 5.dp),
++            )
++        }
++        Icon(
++            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
++            contentDescription = null,
++            tint = if (focused) TvTextPrimary else TvTextSecondary,
++            modifier = Modifier.size(20.dp),
++        )
++    }
++}
++
++@Composable
++internal fun TvEmptyState(
++    title: String,
++    body: String,
++    modifier: Modifier = Modifier,
++    icon: ImageVector = Icons.Default.Tv,
++) {
++    Column(
++        modifier = modifier.fillMaxSize().padding(48.dp),
++        horizontalAlignment = Alignment.CenterHorizontally,
++        verticalArrangement = Arrangement.Center,
++    ) {
++        Icon(icon, contentDescription = null, tint = TvAccentMint, modifier = Modifier.size(44.dp))
++        Text(
++            text = title,
++            color = TvTextPrimary,
++            fontSize = 21.sp,
++            fontWeight = FontWeight.SemiBold,
++            modifier = Modifier.padding(top = 15.dp),
++        )
++        Text(
++            text = body,
++            color = TvTextSecondary,
++            fontSize = 13.sp,
++            modifier = Modifier.padding(top = 6.dp),
++        )
++    }
++}
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvHomeScreen.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvHomeScreen.kt
+new file mode 100644
+index 0000000..b6b89ad
+--- /dev/null
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvHomeScreen.kt
+@@ -0,0 +1,518 @@
++package dev.android.anotheriptvplayer.ui.tv
++
++import androidx.compose.foundation.background
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.PaddingValues
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.lazy.LazyRow
++import androidx.compose.foundation.lazy.items
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.filled.Info
++import androidx.compose.material.icons.filled.LiveTv
++import androidx.compose.material.icons.filled.Movie
++import androidx.compose.material.icons.filled.PlayArrow
++import androidx.compose.material.icons.filled.Tv
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.remember
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.graphics.Brush
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.layout.ContentScale
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.text.style.TextOverflow
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.unit.sp
++import coil.compose.AsyncImage
++import dev.android.anotheriptvplayer.R
++import dev.android.anotheriptvplayer.data.local.CategoryEntity
++import dev.android.anotheriptvplayer.data.local.LiveStreamWithCategory
++import dev.android.anotheriptvplayer.data.local.SeriesWithCategory
++import dev.android.anotheriptvplayer.data.local.VodStreamWithCategory
++import dev.android.anotheriptvplayer.data.local.WatchHistoryEntity
++
++@Composable
++internal fun TvHomeScreen(
++    movies: List<VodStreamWithCategory>,
++    series: List<SeriesWithCategory>,
++    history: List<WatchHistoryEntity>,
++    onOpenMovie: (Int) -> Unit,
++    onPlayMovie: (Int) -> Unit,
++    onOpenSeries: (Int) -> Unit,
++    onResumeHistory: (WatchHistoryEntity) -> Unit,
++    onShowMovies: () -> Unit,
++    onShowSeries: () -> Unit,
++    modifier: Modifier = Modifier,
++) {
++    val hero = remember(movies) { selectHero(movies) }
++    val recentlyAdded = remember(movies) {
++        movies.sortedByDescending { it.stream.added?.toLongOrNull() ?: Long.MIN_VALUE }.take(24)
++    }
++    val topRated = remember(movies) {
++        movies
++            .filter { (it.stream.rating?.toDoubleOrNull() ?: 0.0) > 0.0 }
++            .sortedByDescending { it.stream.rating?.toDoubleOrNull() ?: 0.0 }
++            .take(24)
++    }
++    val updatedSeries = remember(series) {
++        series.sortedByDescending {
++            dev.android.anotheriptvplayer.data.EpisodeUpdateDetector
++                .parseProviderTimestamp(it.series.lastModified) ?: Long.MIN_VALUE
++        }.take(24)
++    }
++    val continueRows = remember(history) {
++        history.distinctBy { row ->
++            if (row.type == "series") "series:${row.seriesId ?: row.streamId}" else row.id
++        }.take(18)
++    }
++    val personalizedMovies = remember(movies, series, history) {
++        selectPersonalizedMovies(movies, series, history)
++    }
++
++    LazyColumn(
++        modifier = modifier.fillMaxSize(),
++        contentPadding = PaddingValues(bottom = 64.dp),
++        verticalArrangement = Arrangement.spacedBy(18.dp),
++    ) {
++        item(key = "hero") {
++            if (hero != null) {
++                TvHero(
++                    movie = hero,
++                    onPlay = { onPlayMovie(hero.stream.streamId) },
++                    onDetails = { onOpenMovie(hero.stream.streamId) },
++                )
++            } else {
++                TvHeroPlaceholder()
++            }
++        }
++
++        if (continueRows.isNotEmpty()) {
++            item(key = "continue") {
++                ContinueWatchingRail(rows = continueRows, onOpen = onResumeHistory)
++            }
++        }
++
++        if (personalizedMovies.isNotEmpty()) {
++            item(key = "personalized") {
++                MovieRail(
++                    title = stringResource(R.string.tv_shelf_for_you),
++                    subtitle = stringResource(R.string.tv_shelf_for_you_subtitle),
++                    movies = personalizedMovies,
++                    onOpenMovie = onOpenMovie,
++                    onSeeAll = onShowMovies,
++                )
++            }
++        }
++
++        if (recentlyAdded.isNotEmpty()) {
++            item(key = "recent") {
++                MovieRail(
++                    title = stringResource(R.string.shelf_recently_added),
++                    movies = recentlyAdded,
++                    onOpenMovie = onOpenMovie,
++                    onSeeAll = onShowMovies,
++                )
++            }
++        }
++
++        if (updatedSeries.isNotEmpty()) {
++            item(key = "series") {
++                SeriesRail(
++                    title = stringResource(R.string.tv_shelf_series),
++                    series = updatedSeries,
++                    onOpenSeries = onOpenSeries,
++                    onSeeAll = onShowSeries,
++                )
++            }
++        }
++
++        if (topRated.isNotEmpty()) {
++            item(key = "top-rated") {
++                MovieRail(
++                    title = stringResource(R.string.tv_shelf_top_rated),
++                    subtitle = stringResource(R.string.tv_shelf_top_rated_subtitle),
++                    movies = topRated,
++                    onOpenMovie = onOpenMovie,
++                    onSeeAll = onShowMovies,
++                )
++            }
++        }
++    }
++}
++
++@Composable
++private fun TvHero(
++    movie: VodStreamWithCategory,
++    onPlay: () -> Unit,
++    onDetails: () -> Unit,
++) {
++    Box(
++        modifier = Modifier
++            .fillMaxWidth()
++            .height(470.dp)
++            .background(TvCanvas),
++    ) {
++        val image = movie.stream.backdropPath ?: movie.stream.streamIcon
++        if (!image.isNullOrBlank()) {
++            AsyncImage(
++                model = image,
++                contentDescription = movie.stream.name,
++                contentScale = ContentScale.Crop,
++                modifier = Modifier.fillMaxSize(),
++            )
++        }
++        Box(
++            modifier = Modifier
++                .fillMaxSize()
++                .background(
++                    Brush.horizontalGradient(
++                        0f to TvCanvas,
++                        0.42f to TvCanvas.copy(alpha = 0.82f),
++                        0.72f to TvCanvas.copy(alpha = 0.18f),
++                        1f to TvCanvas.copy(alpha = 0.24f),
++                    ),
++                ),
++        )
++        Box(
++            modifier = Modifier
++                .fillMaxSize()
++                .background(
++                    Brush.verticalGradient(
++                        0f to TvCanvas.copy(alpha = 0.34f),
++                        0.62f to Color.Transparent,
++                        1f to TvCanvas,
++                    ),
++                ),
++        )
++        Column(
++            modifier = Modifier
++                .align(Alignment.CenterStart)
++                .padding(start = 54.dp, top = 62.dp)
++                .fillMaxWidth(0.48f),
++        ) {
++            Text(
++                text = stringResource(R.string.tv_hero_eyebrow),
++                color = TvAccentMint,
++                fontSize = 11.sp,
++                fontWeight = FontWeight.Bold,
++                letterSpacing = 1.5.sp,
++            )
++            Text(
++                text = movie.stream.name,
++                color = TvTextPrimary,
++                fontSize = 42.sp,
++                lineHeight = 46.sp,
++                fontWeight = FontWeight.Bold,
++                maxLines = 2,
++                overflow = TextOverflow.Ellipsis,
++                modifier = Modifier.padding(top = 10.dp),
++            )
++            val metadata = listOfNotNull(
++                movie.stream.releaseDate?.take(4),
++                movie.stream.rating?.takeIf { it.isNotBlank() }?.let { "★ $it" },
++                movie.categoryName.takeIf { it.isNotBlank() },
++            ).joinToString("  •  ")
++            if (metadata.isNotBlank()) {
++                Text(
++                    text = metadata,
++                    color = TvTextSecondary,
++                    fontSize = 13.sp,
++                    fontWeight = FontWeight.Medium,
++                    modifier = Modifier.padding(top = 12.dp),
++                )
++            }
++            movie.stream.plot?.takeIf { it.isNotBlank() }?.let { plot ->
++                Text(
++                    text = plot,
++                    color = TvTextPrimary.copy(alpha = 0.82f),
++                    fontSize = 14.sp,
++                    lineHeight = 20.sp,
++                    maxLines = 3,
++                    overflow = TextOverflow.Ellipsis,
++                    modifier = Modifier.padding(top = 14.dp),
++                )
++            }
++            Row(
++                modifier = Modifier.padding(top = 23.dp),
++                horizontalArrangement = Arrangement.spacedBy(12.dp),
++            ) {
++                TvActionButton(
++                    text = stringResource(R.string.tv_play),
++                    icon = Icons.Default.PlayArrow,
++                    primary = true,
++                    onClick = onPlay,
++                )
++                TvActionButton(
++                    text = stringResource(R.string.tv_more_info),
++                    icon = Icons.Default.Info,
++                    onClick = onDetails,
++                )
++            }
++        }
++    }
++}
++
++@Composable
++private fun TvHeroPlaceholder() {
++    Box(
++        modifier = Modifier
++            .fillMaxWidth()
++            .height(350.dp)
++            .background(
++                Brush.linearGradient(
++                    listOf(Color(0xFF1B1632), Color(0xFF0D1E24), TvCanvas),
++                ),
++            ),
++    ) {
++        Column(
++            modifier = Modifier.align(Alignment.CenterStart).padding(start = 54.dp, top = 62.dp),
++        ) {
++            Text(
++                text = stringResource(R.string.tv_welcome_title),
++                color = TvTextPrimary,
++                fontSize = 38.sp,
++                fontWeight = FontWeight.Bold,
++            )
++            Text(
++                text = stringResource(R.string.tv_welcome_body),
++                color = TvTextSecondary,
++                fontSize = 15.sp,
++                modifier = Modifier.padding(top = 10.dp),
++            )
++        }
++    }
++}
++
++@Composable
++internal fun MovieRail(
++    title: String,
++    movies: List<VodStreamWithCategory>,
++    onOpenMovie: (Int) -> Unit,
++    modifier: Modifier = Modifier,
++    subtitle: String? = null,
++    onSeeAll: (() -> Unit)? = null,
++) {
++    TvShelf(title = title, subtitle = subtitle, onSeeAll = onSeeAll, modifier = modifier) {
++        LazyRow(
++            contentPadding = PaddingValues(horizontal = 48.dp, vertical = 10.dp),
++            horizontalArrangement = Arrangement.spacedBy(16.dp),
++        ) {
++            items(movies, key = { it.id }) { row ->
++                TvPosterCard(
++                    title = row.stream.name,
++                    imageUrl = row.stream.streamIcon,
++                    eyebrow = row.stream.rating?.takeIf { it.isNotBlank() }?.let { "★ $it" },
++                    onClick = { onOpenMovie(row.stream.streamId) },
++                )
++            }
++        }
++    }
++}
++
++@Composable
++internal fun SeriesRail(
++    title: String,
++    series: List<SeriesWithCategory>,
++    onOpenSeries: (Int) -> Unit,
++    modifier: Modifier = Modifier,
++    subtitle: String? = null,
++    onSeeAll: (() -> Unit)? = null,
++) {
++    TvShelf(title = title, subtitle = subtitle, onSeeAll = onSeeAll, modifier = modifier) {
++        LazyRow(
++            contentPadding = PaddingValues(horizontal = 48.dp, vertical = 10.dp),
++            horizontalArrangement = Arrangement.spacedBy(16.dp),
++        ) {
++            items(series, key = { it.id }) { row ->
++                TvPosterCard(
++                    title = row.series.name,
++                    imageUrl = row.series.cover,
++                    eyebrow = row.series.rating?.takeIf { it.isNotBlank() }?.let { "★ $it" },
++                    onClick = { onOpenSeries(row.series.seriesId) },
++                )
++            }
++        }
++    }
++}
++
++@Composable
++internal fun TvCatalogScreen(
++    destination: TvDestination,
++    categories: List<CategoryEntity>,
++    liveByCategory: Map<String, List<LiveStreamWithCategory>>,
++    moviesByCategory: Map<String, List<VodStreamWithCategory>>,
++    seriesByCategory: Map<String, List<SeriesWithCategory>>,
++    onOpenLiveCategory: (String) -> Unit,
++    onOpenMovieCategory: (String) -> Unit,
++    onOpenSeriesCategory: (String) -> Unit,
++    onPlayLive: (Int) -> Unit,
++    onOpenMovie: (Int) -> Unit,
++    onOpenSeries: (Int) -> Unit,
++    modifier: Modifier = Modifier,
++) {
++    if (categories.isEmpty()) {
++        TvEmptyState(
++            title = stringResource(R.string.tv_empty_catalog_title),
++            body = stringResource(R.string.tv_empty_catalog_body),
++            icon = when (destination) {
++                TvDestination.Live -> Icons.Default.LiveTv
++                TvDestination.Movies -> Icons.Default.Movie
++                else -> Icons.Default.Tv
++            },
++            modifier = modifier.padding(top = 82.dp),
++        )
++        return
++    }
++
++    LazyColumn(
++        modifier = modifier.fillMaxSize(),
++        contentPadding = PaddingValues(top = 104.dp, bottom = 60.dp),
++        verticalArrangement = Arrangement.spacedBy(20.dp),
++    ) {
++        item(key = "catalog-title") {
++            Column(modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)) {
++                Text(
++                    text = stringResource(destination.labelRes),
++                    color = TvTextPrimary,
++                    fontSize = 34.sp,
++                    fontWeight = FontWeight.Bold,
++                )
++                Text(
++                    text = stringResource(R.string.tv_catalog_subtitle),
++                    color = TvTextSecondary,
++                    fontSize = 13.sp,
++                    modifier = Modifier.padding(top = 5.dp),
++                )
++            }
++        }
++
++        items(categories, key = { "${destination.name}:${it.id}" }) { category ->
++            when (destination) {
++                TvDestination.Live -> {
++                    val rows = liveByCategory[category.id].orEmpty().take(24)
++                    if (rows.isNotEmpty()) {
++                        TvShelf(
++                            title = category.name,
++                            onSeeAll = { onOpenLiveCategory(category.id) },
++                        ) {
++                            LazyRow(
++                                contentPadding = PaddingValues(horizontal = 48.dp, vertical = 10.dp),
++                                horizontalArrangement = Arrangement.spacedBy(16.dp),
++                            ) {
++                                items(rows, key = { it.id }) { row ->
++                                    TvLandscapeCard(
++                                        title = row.stream.name,
++                                        imageUrl = row.stream.streamIcon,
++                                        subtitle = category.name,
++                                        icon = Icons.Default.LiveTv,
++                                        onClick = { onPlayLive(row.stream.streamId) },
++                                    )
++                                }
++                            }
++                        }
++                    }
++                }
++
++                TvDestination.Movies -> {
++                    val rows = moviesByCategory[category.id].orEmpty().take(24)
++                    if (rows.isNotEmpty()) {
++                        MovieRail(
++                            title = category.name,
++                            movies = rows,
++                            onOpenMovie = onOpenMovie,
++                            onSeeAll = { onOpenMovieCategory(category.id) },
++                        )
++                    }
++                }
++
++                TvDestination.Series -> {
++                    val rows = seriesByCategory[category.id].orEmpty().take(24)
++                    if (rows.isNotEmpty()) {
++                        SeriesRail(
++                            title = category.name,
++                            series = rows,
++                            onOpenSeries = onOpenSeries,
++                            onSeeAll = { onOpenSeriesCategory(category.id) },
++                        )
++                    }
++                }
++
++                TvDestination.Home -> Unit
++            }
++        }
++    }
++}
++
++private fun selectHero(movies: List<VodStreamWithCategory>): VodStreamWithCategory? {
++    if (movies.isEmpty()) return null
++    return movies
++        .asSequence()
++        .filter { !it.stream.streamIcon.isNullOrBlank() || !it.stream.backdropPath.isNullOrBlank() }
++        .sortedWith(
++            compareByDescending<VodStreamWithCategory> { it.stream.backdropPath != null }
++                .thenByDescending { it.stream.added?.toLongOrNull() ?: 0L }
++                .thenByDescending { it.stream.rating?.toDoubleOrNull() ?: 0.0 },
++        )
++        .firstOrNull()
++        ?: movies.first()
++}
++
++/**
++ * Lightweight, private recommendation model that never uploads viewing data.
++ * It learns the most-watched catalog categories, excludes already-watched
++ * movies, then uses rating and recency as tie-breakers.
++ */
++private fun selectPersonalizedMovies(
++    movies: List<VodStreamWithCategory>,
++    series: List<SeriesWithCategory>,
++    history: List<WatchHistoryEntity>,
++): List<VodStreamWithCategory> {
++    if (history.isEmpty() || movies.isEmpty()) return emptyList()
++
++    val moviesById = movies.associateBy { it.stream.streamId }
++    val seriesById = series.associateBy { it.series.seriesId }
++    val watchedMovieIds = history.asSequence()
++        .filter { it.type == "vod" }
++        .mapNotNull { it.streamId.toIntOrNull() }
++        .toSet()
++    val categoryScores = mutableMapOf<String, Int>()
++
++    history.forEachIndexed { index, row ->
++        val categoryId = when (row.type) {
++            "vod" -> row.streamId.toIntOrNull()?.let(moviesById::get)?.stream?.categoryId
++            "series" -> row.seriesId?.toIntOrNull()?.let(seriesById::get)?.series?.categoryId
++            else -> null
++        }?.takeIf { it.isNotBlank() } ?: return@forEachIndexed
++
++        // Recent activity has a little more influence, while repeated views
++        // naturally reinforce the same category.
++        val recencyWeight = (history.size - index).coerceAtLeast(1)
++        categoryScores[categoryId] = categoryScores.getOrDefault(categoryId, 0) + recencyWeight
++    }
++
++    if (categoryScores.isEmpty()) return emptyList()
++
++    return movies.asSequence()
++        .filter { row ->
++            row.stream.streamId !in watchedMovieIds &&
++                row.stream.categoryId?.let(categoryScores::containsKey) == true
++        }
++        .sortedWith(
++            compareByDescending<VodStreamWithCategory> {
++                it.stream.categoryId?.let(categoryScores::get) ?: 0
++            }
++                .thenByDescending { it.stream.rating?.toDoubleOrNull() ?: 0.0 }
++                .thenByDescending { it.stream.added?.toLongOrNull() ?: 0L },
++        )
++        .take(24)
++        .toList()
++}
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/util/ExternalPlayer.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/util/ExternalPlayer.kt
+index 67d5891..f3d1ae1 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/util/ExternalPlayer.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/util/ExternalPlayer.kt
+@@ -29,6 +29,6 @@ fun launchExternalPlayer(context: Context, url: String) {
+             context.getString(R.string.external_player_not_found),
+             Toast.LENGTH_LONG,
+         ).show()
+-        Log.i("ExternalPlayer", "No video handler for $url")
++        Log.i("ExternalPlayer", "No video handler for requested media")
+     }
+ }
+diff --git a/apps/android/app/src/main/res/drawable/tv_banner.xml b/apps/android/app/src/main/res/drawable/tv_banner.xml
+new file mode 100644
+index 0000000..bb6c2ae
+--- /dev/null
++++ b/apps/android/app/src/main/res/drawable/tv_banner.xml
+@@ -0,0 +1,39 @@
++<?xml version="1.0" encoding="utf-8"?>
++<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
++    <item>
++        <shape android:shape="rectangle">
++            <gradient
++                android:angle="0"
++                android:startColor="#111426"
++                android:centerColor="#2A2050"
++                android:endColor="#123B3B" />
++            <corners android:radius="12dp" />
++        </shape>
++    </item>
++    <item
++        android:width="78dp"
++        android:height="78dp"
++        android:gravity="center">
++        <shape android:shape="oval">
++            <gradient
++                android:angle="45"
++                android:startColor="#9A7BFF"
++                android:endColor="#5FE0CE" />
++        </shape>
++    </item>
++    <item
++        android:width="34dp"
++        android:height="40dp"
++        android:gravity="center"
++        android:left="5dp">
++        <vector
++            android:width="34dp"
++            android:height="40dp"
++            android:viewportWidth="34"
++            android:viewportHeight="40">
++            <path
++                android:fillColor="#FFFFFFFF"
++                android:pathData="M4,2 L32,20 L4,38 Z" />
++        </vector>
++    </item>
++</layer-list>
+diff --git a/apps/android/app/src/main/res/values-fr/strings.xml b/apps/android/app/src/main/res/values-fr/strings.xml
+new file mode 100644
+index 0000000..2627b0d
+--- /dev/null
++++ b/apps/android/app/src/main/res/values-fr/strings.xml
+@@ -0,0 +1,250 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <string name="app_name">Another IPTV · Aperçu TV</string>
++
++    <string name="common_back">Retour</string>
++    <string name="common_cancel">Annuler</string>
++    <string name="common_save">Enregistrer</string>
++    <string name="common_delete">Supprimer</string>
++    <string name="common_edit">Modifier</string>
++    <string name="common_ok">OK</string>
++    <string name="common_search">Rechercher</string>
++    <string name="common_refresh">Actualiser</string>
++    <string name="common_play">Lire</string>
++    <string name="common_pause">Pause</string>
++    <string name="common_retry">Réessayer</string>
++    <string name="common_show">Afficher</string>
++    <string name="common_hide">Masquer</string>
++    <string name="common_loading">Chargement…</string>
++    <string name="common_unnamed">Sans nom</string>
++    <string name="common_close">Fermer</string>
++
++    <string name="tv_brand">ANOTHER TV</string>
++    <string name="tv_nav_home">Accueil</string>
++    <string name="tv_nav_live">Direct</string>
++    <string name="tv_nav_movies">Films</string>
++    <string name="tv_nav_series">Séries</string>
++    <string name="tv_search">Rechercher</string>
++    <string name="tv_settings">Réglages</string>
++    <string name="tv_notifications">Nouveaux épisodes</string>
++    <string name="tv_notifications_unread">%1$d nouveautés non lues</string>
++    <string name="tv_notifications_caught_up">Tout est à jour</string>
++    <string name="tv_notifications_empty_title">Rien de nouveau pour le moment</string>
++    <string name="tv_notifications_empty_body">Les mises à jour des séries que vous regardez apparaîtront ici après l’actualisation du catalogue.</string>
++    <string name="tv_mark_all_read">Tout marquer comme lu</string>
++    <string name="tv_update_detected">NOUVEAUX ÉPISODES</string>
++    <string name="tv_refreshing">Actualisation du catalogue…</string>
++    <string name="tv_see_all">Tout voir</string>
++    <string name="tv_play">Lecture</string>
++    <string name="tv_more_info">Plus d’infos</string>
++    <string name="tv_hero_eyebrow">À LA UNE POUR VOUS</string>
++    <string name="tv_welcome_title">Votre cinéma commence ici</string>
++    <string name="tv_welcome_body">Ajoutez ou actualisez une playlist pour afficher votre catalogue.</string>
++    <string name="tv_shelf_series">Séries à poursuivre</string>
++    <string name="tv_shelf_for_you">Recommandés pour vous</string>
++    <string name="tv_shelf_for_you_subtitle">Suggestions privées basées uniquement sur vos lectures sur cet appareil</string>
++    <string name="tv_shelf_top_rated">Les mieux notés de votre catalogue</string>
++    <string name="tv_shelf_top_rated_subtitle">Uniquement les titres réellement disponibles dans votre playlist</string>
++    <string name="tv_catalog_subtitle">Parcourez tout votre catalogue avec la télécommande</string>
++    <string name="tv_empty_catalog_title">Cette section est vide</string>
++    <string name="tv_empty_catalog_body">Actualisez la playlist ou vérifiez les catégories masquées dans les réglages.</string>
++
++    <string name="screen_playlists">Playlists</string>
++    <string name="screen_live_tv">Télévision</string>
++    <string name="screen_movies">Films</string>
++    <string name="screen_series">Séries</string>
++    <string name="screen_settings">Réglages</string>
++    <string name="screen_search">Recherche</string>
++    <string name="screen_downloads">Téléchargements</string>
++    <string name="screen_watch_history">Historique</string>
++    <string name="screen_m3u_channels">Chaînes en direct</string>
++    <string name="screen_favorites">Favoris</string>
++
++    <string name="shelf_continue_watching">Reprendre la lecture</string>
++    <string name="shelf_recently_added">Ajouts récents</string>
++
++    <string name="empty_no_playlists">Aucune playlist</string>
++    <string name="empty_add_playlist">Ajouter une playlist</string>
++    <string name="empty_no_downloads">Aucun téléchargement.</string>
++    <string name="empty_no_history">Aucun historique de lecture.</string>
++    <string name="empty_search_idle">Saisissez votre recherche.</string>
++    <string name="empty_search_no_results">Aucun résultat.</string>
++    <string name="empty_no_categories">Aucune catégorie.</string>
++    <string name="empty_categories_hidden">Toutes les catégories sont masquées.</string>
++
++    <string name="search_voice_action">Recherche vocale</string>
++    <string name="search_voice_prompt">Dites un titre, un acteur ou un réalisateur en français ou en anglais</string>
++
++    <string name="settings_card_player">Lecteur</string>
++    <string name="settings_card_library">Bibliothèque</string>
++    <string name="settings_card_about">À propos</string>
++    <string name="settings_card_subscription">Abonnement</string>
++    <string name="settings_card_stats">Statistiques du catalogue</string>
++    <string name="settings_card_content">Contenu</string>
++    <string name="settings_library_downloads">Téléchargements</string>
++    <string name="settings_library_downloads_subtitle">File d’attente et éléments téléchargés.</string>
++    <string name="settings_library_history">Historique</string>
++    <string name="settings_library_history_subtitle">Reprendre les contenus récemment regardés.</string>
++    <string name="settings_version">Version</string>
++    <string name="settings_re_download">Actualiser tout le catalogue</string>
++    <string name="settings_live_count">Chaînes</string>
++    <string name="settings_vod_count">Films</string>
++    <string name="settings_series_count">Séries</string>
++
++    <string name="sync_preparing">Préparation…</string>
++    <string name="sync_list_preparing">Préparation de la liste…</string>
++    <string name="sync_clearing">Mise à jour du contenu…</string>
++    <string name="sync_categories">Récupération des catégories…</string>
++    <string name="sync_catalog_content">Récupération des chaînes, films et séries…</string>
++    <string name="sync_live">Récupération des chaînes…</string>
++    <string name="sync_movies">Récupération des films…</string>
++    <string name="sync_series">Récupération des séries…</string>
++    <string name="sync_persisting">Enregistrement du catalogue…</string>
++
++    <string name="error_generic">Une erreur est survenue.</string>
++
++    <!-- États vides -->
++    <string name="empty_shelf_no_content">Aucun contenu dans cette catégorie.</string>
++    <string name="empty_category_no_live">Aucune chaîne dans cette catégorie.</string>
++    <string name="empty_category_no_movies">Aucun film dans cette catégorie.</string>
++    <string name="empty_category_no_series">Aucune série dans cette catégorie.</string>
++    <string name="empty_category_search_no_live">Aucune chaîne ne correspond à votre recherche.</string>
++    <string name="empty_category_search_no_movies">Aucun film ne correspond à votre recherche.</string>
++    <string name="empty_category_search_no_series">Aucune série ne correspond à votre recherche.</string>
++    <string name="empty_favorites_live">Aucune chaîne favorite.</string>
++    <string name="empty_favorites_vod">Aucun film favori.</string>
++    <string name="empty_favorites_series">Aucune série favorite.</string>
++
++    <!-- Réglages -->
++    <string name="settings_player_pip">Image dans l’image</string>
++    <string name="settings_player_pip_subtitle">Poursuit la lecture dans une fenêtre flottante lorsque vous quittez l’application.</string>
++    <string name="settings_player_bg">Lecture en arrière-plan</string>
++    <string name="settings_player_bg_subtitle">Continue la lecture audio lorsque l’application est en arrière-plan.</string>
++    <string name="settings_player_long_press">Maintenir pour accélérer à 2×</string>
++    <string name="settings_player_long_press_subtitle">Accélère temporairement la lecture tant que vous maintenez l’écran.</string>
++    <string name="settings_user">Utilisateur</string>
++    <string name="settings_password">Mot de passe</string>
++    <string name="settings_loading_info">Chargement des informations…</string>
++    <string name="settings_active_connection">Connexions actives</string>
++    <string name="settings_max_connection">Connexions maximales</string>
++    <string name="settings_unlimited">Illimité</string>
++    <string name="settings_unlimited_or_unknown">Illimité ou inconnu</string>
++    <string name="settings_expired">Expiré</string>
++    <string name="settings_expires_today">Expire aujourd’hui</string>
++    <string name="settings_days_left">%1$d jours</string>
++    <string name="settings_adult_filter">Filtrer le contenu pour adultes</string>
++    <string name="settings_adult_filter_subtitle">Masque les catégories, chaînes et films signalés comme adultes. Le catalogue est retéléchargé à l’activation.</string>
++    <string name="settings_github_subtitle">Code source, suivi des problèmes et contributions.</string>
++    <string name="settings_github_label">Dépôt GitHub</string>
++    <string name="settings_card_playlist_info">Informations de la playlist</string>
++    <string name="settings_card_server">Serveur</string>
++    <string name="settings_name">Nom</string>
++    <string name="settings_server">Serveur</string>
++    <string name="settings_unknown_error">Erreur inconnue</string>
++    <string name="settings_subscription_unknown">Aucune information d’abonnement.</string>
++    <string name="settings_subscription_status">Statut</string>
++
++    <!-- Lecteur -->
++    <string name="player_pip">Image dans l’image</string>
++    <string name="player_subtitles">Réglages des sous-titres</string>
++    <string name="player_tracks">Pistes</string>
++    <string name="player_seek_back_10">Reculer de 10 secondes</string>
++    <string name="player_seek_fwd_10">Avancer de 10 secondes</string>
++    <string name="player_next_episode">Épisode suivant</string>
++    <string name="player_section_subtitles">Sous-titres</string>
++    <string name="player_section_audio">Audio</string>
++    <string name="player_section_video">Vidéo</string>
++    <string name="player_mpv_recent_logs">mpv (%1$d dernières lignes) :</string>
++    <string name="player_brightness">Luminosité</string>
++    <string name="player_volume">Volume</string>
++    <string name="player_episode_default_format">Épisode %1$s</string>
++
++    <!-- Sous-titres -->
++    <string name="subtitle_sheet_title">Réglages des sous-titres</string>
++    <string name="subtitle_font_size">Taille du texte</string>
++    <string name="subtitle_outline">Contour</string>
++    <string name="subtitle_delay_seconds">Décalage (s)</string>
++    <string name="subtitle_italic">Italique</string>
++    <string name="subtitle_background">Arrière-plan</string>
++
++    <!-- Ajout et validation des playlists -->
++    <string name="add_xtream_verifying">Vérification…</string>
++    <string name="add_xtream_save_failed">Échec de l’enregistrement.</string>
++    <string name="add_xtream_auth_failed">Échec de l’authentification Xtream.</string>
++    <string name="add_xtream_connection_failed">Échec de la connexion</string>
++    <string name="xtream_error_invalid_url">Adresse Xtream invalide : %1$s</string>
++    <string name="xtream_error_network">Erreur réseau : %1$s</string>
++    <string name="xtream_error_decoding">Impossible de lire la réponse du serveur : %1$s</string>
++    <string name="xtream_error_server">Erreur du serveur : %1$s</string>
++    <string name="add_m3u_importing">Importation…</string>
++    <string name="add_m3u_reading_file">Lecture du fichier…</string>
++    <string name="add_m3u_connecting">Connexion…</string>
++    <string name="add_m3u_parsing">Analyse de la playlist…</string>
++    <string name="add_m3u_saving_with_count">Enregistrement des chaînes… (%1$d)</string>
++    <string name="add_m3u_invalid_url">Adresse invalide</string>
++    <string name="add_m3u_network_error">Erreur réseau : %1$s</string>
++    <string name="add_m3u_server_error">Erreur du serveur : HTTP %1$d</string>
++    <string name="add_m3u_file_read_failed">Impossible de lire le fichier</string>
++    <string name="add_m3u_empty">La playlist est vide.</string>
++    <string name="add_m3u_no_channels">Aucune chaîne valide trouvée.</string>
++
++    <!-- Catégories et fiches -->
++    <string name="picker_live_categories">Catégories du direct</string>
++    <string name="picker_vod_categories">Catégories de films</string>
++    <string name="picker_series_categories">Catégories de séries</string>
++    <string name="detail_loading_movie">Chargement du film…</string>
++    <string name="detail_loading_series">Chargement de la série…</string>
++    <string name="detail_loading_playlist">Chargement de la playlist…</string>
++    <string name="detail_seasons_loading">Chargement des saisons…</string>
++    <string name="detail_seasons_failed">Impossible de charger les saisons.</string>
++    <string name="detail_no_seasons">Aucune information de saison pour cette série.</string>
++    <string name="detail_no_episodes">Aucun épisode dans cette saison.</string>
++    <string name="detail_watch">Regarder</string>
++    <string name="detail_director">Réalisation</string>
++    <string name="detail_trailer_failed">Impossible d’ouvrir la bande-annonce.</string>
++    <string name="detail_episode_default">Épisode</string>
++    <string name="detail_episode_count_format">%1$d épisodes</string>
++    <string name="detail_favorite_add">Ajouter aux favoris</string>
++    <string name="detail_favorite_remove">Retirer des favoris</string>
++
++    <!-- M3U et recherche -->
++    <string name="m3u_load_error_generic">Une erreur est survenue.</string>
++    <string name="m3u_other_group">Autres</string>
++    <string name="search_type_all">Tout</string>
++    <string name="search_type_live">Direct</string>
++    <string name="search_min_chars">Saisissez au moins 2 caractères.</string>
++    <string name="search_no_results_for">Aucun résultat pour « %1$s ».</string>
++    <string name="search_more_results">%1$d résultats supplémentaires</string>
++
++    <!-- Téléchargements -->
++    <string name="download_status_queued">En attente</string>
++    <string name="download_status_downloading">Téléchargement</string>
++    <string name="download_status_downloading_progress">Téléchargement — %1$d%%</string>
++    <string name="download_status_downloading_pending">Téléchargement…</string>
++    <string name="download_status_completed">Terminé</string>
++    <string name="download_status_failed">Échec</string>
++    <string name="download_cancel">Annuler</string>
++    <string name="download_channel_name">Téléchargements</string>
++    <string name="download_channel_description">Notification en arrière-plan pour les téléchargements de films et d’épisodes</string>
++
++    <!-- Résolution et erreurs du lecteur -->
++    <string name="resolve_playlist_not_found">Playlist introuvable.</string>
++    <string name="resolve_movie_not_found">Film introuvable.</string>
++    <string name="resolve_episode_not_found">Épisode introuvable.</string>
++    <string name="resolve_channel_not_found">Chaîne introuvable.</string>
++    <string name="resolve_player_init_failed">Impossible de démarrer le lecteur : %1$s</string>
++    <string name="external_player_not_found">Aucune application capable de lire la vidéo n’a été trouvée (VLC, MX Player…).</string>
++    <string name="error_server_unreachable">Serveur inaccessible.</string>
++    <string name="error_timeout">Délai de connexion dépassé.</string>
++    <string name="error_player_init">Impossible de démarrer le lecteur.</string>
++    <string name="track_off">Désactivée</string>
++    <string name="track_index">Piste %1$d</string>
++    <string name="mpv_error_forbidden">L’accès à ce contenu a été refusé.</string>
++    <string name="mpv_error_unauthorized">Ce contenu nécessite une autorisation.</string>
++    <string name="mpv_error_not_found">Contenu introuvable.</string>
++    <string name="mpv_error_playback_init">La lecture n’a pas pu démarrer.</string>
++    <string name="mpv_error_unsupported">Ce contenu ne peut pas être lu sur cet appareil.</string>
++    <string name="mpv_error_nothing_to_play">Aucun flux lisible n’a été trouvé.</string>
++    <string name="mpv_error_av_init">La sortie audio ou vidéo n’a pas pu démarrer.</string>
++    <string name="mpv_error_check_network">Échec de la lecture. Vérifiez votre connexion réseau.</string>
++</resources>
+diff --git a/apps/android/app/src/main/res/values/strings.xml b/apps/android/app/src/main/res/values/strings.xml
+index 5c948f6..675dd8c 100644
+--- a/apps/android/app/src/main/res/values/strings.xml
++++ b/apps/android/app/src/main/res/values/strings.xml
+@@ -1,5 +1,5 @@
+ <resources>
+-    <string name="app_name">Another IPTV Player</string>
++    <string name="app_name">Another IPTV · TV Preview</string>
+ 
+     <!-- Common controls -->
+     <string name="common_back">Back</string>
+@@ -17,6 +17,38 @@
+     <string name="common_hide">Hide</string>
+     <string name="common_loading">Loading…</string>
+     <string name="common_unnamed">Unnamed</string>
++    <string name="common_close">Close</string>
++
++    <!-- Premium Android TV shell -->
++    <string name="tv_brand">ANOTHER TV</string>
++    <string name="tv_nav_home">Home</string>
++    <string name="tv_nav_live">Live</string>
++    <string name="tv_nav_movies">Movies</string>
++    <string name="tv_nav_series">Series</string>
++    <string name="tv_search">Search</string>
++    <string name="tv_settings">Settings</string>
++    <string name="tv_notifications">New episodes</string>
++    <string name="tv_notifications_unread">%1$d unread updates</string>
++    <string name="tv_notifications_caught_up">You’re all caught up</string>
++    <string name="tv_notifications_empty_title">Nothing new for now</string>
++    <string name="tv_notifications_empty_body">Updates to series you watch will appear here after the catalog refreshes.</string>
++    <string name="tv_mark_all_read">Mark all as read</string>
++    <string name="tv_update_detected">NEW EPISODES</string>
++    <string name="tv_refreshing">Updating catalog…</string>
++    <string name="tv_see_all">See all</string>
++    <string name="tv_play">Play</string>
++    <string name="tv_more_info">More info</string>
++    <string name="tv_hero_eyebrow">FEATURED FOR YOU</string>
++    <string name="tv_welcome_title">Your cinema starts here</string>
++    <string name="tv_welcome_body">Add or refresh a playlist to bring your library to life.</string>
++    <string name="tv_shelf_series">Series to continue</string>
++    <string name="tv_shelf_for_you">Recommended for you</string>
++    <string name="tv_shelf_for_you_subtitle">Private suggestions based only on what you watch on this device</string>
++    <string name="tv_shelf_top_rated">Top rated in your catalog</string>
++    <string name="tv_shelf_top_rated_subtitle">Only titles available from your playlist</string>
++    <string name="tv_catalog_subtitle">Browse your complete catalog with the remote</string>
++    <string name="tv_empty_catalog_title">This section is empty</string>
++    <string name="tv_empty_catalog_body">Refresh your playlist or check hidden categories in Settings.</string>
+ 
+     <!-- Screen titles -->
+     <string name="screen_playlists">Playlists</string>
+@@ -173,6 +205,8 @@
+     <string name="search_min_chars">Enter at least 2 characters.</string>
+     <string name="search_no_results_for">No results for \"%1$s\".</string>
+     <string name="search_more_results">%1$d more results</string>
++    <string name="search_voice_action">Voice search</string>
++    <string name="search_voice_prompt">Say a title, actor or director in French or English</string>
+ 
+     <!-- Downloads status -->
+     <string name="download_status_queued">Queued</string>
+@@ -190,6 +224,7 @@
+     <string name="sync_list_preparing">Preparing list…</string>
+     <string name="sync_clearing">Clearing content…</string>
+     <string name="sync_categories">Fetching categories…</string>
++    <string name="sync_catalog_content">Fetching channels, movies and series…</string>
+     <string name="sync_live">Fetching live channels…</string>
+     <string name="sync_movies">Fetching movies…</string>
+     <string name="sync_series">Fetching series…</string>
+diff --git a/apps/android/app/src/test/java/dev/android/anotheriptvplayer/data/EpisodeUpdateDetectorTest.kt b/apps/android/app/src/test/java/dev/android/anotheriptvplayer/data/EpisodeUpdateDetectorTest.kt
+new file mode 100644
+index 0000000..1820c18
+--- /dev/null
++++ b/apps/android/app/src/test/java/dev/android/anotheriptvplayer/data/EpisodeUpdateDetectorTest.kt
+@@ -0,0 +1,97 @@
++package dev.android.anotheriptvplayer.data
++
++import dev.android.anotheriptvplayer.data.local.SeriesEntity
++import dev.android.anotheriptvplayer.data.local.SeriesWithCategory
++import dev.android.anotheriptvplayer.data.local.WatchHistoryEntity
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNull
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class EpisodeUpdateDetectorTest {
++
++    @Test
++    fun detectsProviderUpdateAfterLatestWatch() {
++        val watchedAt = 1_700_000_000_000L
++        val modifiedAt = watchedAt + 120_000L
++
++        val result = EpisodeUpdateDetector.detect(
++            series = listOf(series(lastModified = modifiedAt.toString())),
++            history = listOf(history(lastWatchedAt = watchedAt)),
++            readSignatures = emptySet(),
++        )
++
++        assertEquals(1, result.size)
++        assertEquals(42, result.single().seriesId)
++        assertEquals(modifiedAt, result.single().modifiedAtMillis)
++        assertTrue(result.single().isUnread)
++    }
++
++    @Test
++    fun ignoresUpdateWithinProviderClockTolerance() {
++        val watchedAt = 1_700_000_000_000L
++        val result = EpisodeUpdateDetector.detect(
++            series = listOf(series(lastModified = (watchedAt + 30_000L).toString())),
++            history = listOf(history(lastWatchedAt = watchedAt)),
++            readSignatures = emptySet(),
++        )
++
++        assertTrue(result.isEmpty())
++    }
++
++    @Test
++    fun keepsDetectedUpdateButMarksItsSignatureRead() {
++        val watchedAt = 1_700_000_000_000L
++        val modifiedAt = watchedAt + 120_000L
++        val signature = "42:$modifiedAt"
++
++        val result = EpisodeUpdateDetector.detect(
++            series = listOf(series(lastModified = modifiedAt.toString())),
++            history = listOf(history(lastWatchedAt = watchedAt)),
++            readSignatures = setOf(signature),
++        )
++
++        assertEquals(signature, result.single().signature)
++        assertFalse(result.single().isUnread)
++    }
++
++    @Test
++    fun parsesXtreamTimestampVariants() {
++        assertEquals(
++            1_700_000_000_000L,
++            EpisodeUpdateDetector.parseProviderTimestamp("1700000000"),
++        )
++        assertEquals(
++            1_700_000_000_123L,
++            EpisodeUpdateDetector.parseProviderTimestamp("1700000000123"),
++        )
++        assertEquals(
++            1_700_000_000_000L,
++            EpisodeUpdateDetector.parseProviderTimestamp("2023-11-14T22:13:20Z"),
++        )
++        assertNull(EpisodeUpdateDetector.parseProviderTimestamp("unknown"))
++    }
++
++    private fun series(lastModified: String?) = SeriesWithCategory(
++        series = SeriesEntity(
++            seriesId = 42,
++            name = "Example series",
++            cover = "https://images.example/42.jpg",
++            categoryId = "7",
++            playlistId = "playlist",
++            lastModified = lastModified,
++        ),
++        categoryName = "Drama",
++    )
++
++    private fun history(lastWatchedAt: Long) = WatchHistoryEntity(
++        id = "series:42:episode:3",
++        playlistId = "playlist",
++        streamId = "3",
++        type = "series",
++        lastWatchedAt = lastWatchedAt,
++        title = "Example series",
++        seriesId = "42",
++    )
++}
+-- 
+2.51.1
+
