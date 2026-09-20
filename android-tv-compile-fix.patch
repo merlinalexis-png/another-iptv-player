@@ -1,0 +1,43 @@
+From 6f5f7b5f994663728cba660f82c39041735b92da Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sun, 20 Sep 2026 20:47:55 +0200
+Subject: [PATCH] fix(android-tv): import header action icons
+
+---
+ .../dev/android/anotheriptvplayer/ui/tv/TvComponents.kt     | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvComponents.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvComponents.kt
+index 58c760e..9a1f6fa 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvComponents.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvComponents.kt
+@@ -40,6 +40,8 @@ import androidx.compose.material.icons.filled.LiveTv
+ import androidx.compose.material.icons.filled.Movie
+ import androidx.compose.material.icons.filled.NotificationsNone
+ import androidx.compose.material.icons.filled.PlayArrow
++import androidx.compose.material.icons.filled.Search
++import androidx.compose.material.icons.filled.Settings
+ import androidx.compose.material.icons.filled.Tv
+ import androidx.compose.material3.Icon
+ import androidx.compose.material3.LinearProgressIndicator
+@@ -157,7 +159,7 @@ internal fun TvTopNavigation(
+             )
+         }
+         TvHeaderIcon(
+-            icon = androidx.compose.material.icons.Icons.Default.Search,
++            icon = Icons.Default.Search,
+             contentDescription = stringResource(R.string.tv_search),
+             onClick = onSearch,
+         )
+@@ -170,7 +172,7 @@ internal fun TvTopNavigation(
+         )
+         Spacer(Modifier.width(8.dp))
+         TvHeaderIcon(
+-            icon = androidx.compose.material.icons.Icons.Default.Settings,
++            icon = Icons.Default.Settings,
+             contentDescription = stringResource(R.string.tv_settings),
+             onClick = onSettings,
+         )
+-- 
+2.51.1
+
