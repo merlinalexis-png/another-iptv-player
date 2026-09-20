@@ -1,4 +1,4 @@
-From 2c94766af000a5f045af7888fe832c91dcb5abf6 Mon Sep 17 00:00:00 2001
+From 2aa96b73e412c5e2daef83b073756cea2031bfab Mon Sep 17 00:00:00 2001
 From: Codex <codex@openai.com>
 Date: Sun, 20 Sep 2026 22:06:59 +0200
 Subject: [PATCH] fix(android-tv): bound catalog memory and stabilize playback
@@ -6,23 +6,23 @@ Subject: [PATCH] fix(android-tv): bound catalog memory and stabilize playback
 ---
  apps/android/TV_PREVIEW.md                    |  11 +-
  apps/android/app/build.gradle.kts             |   4 +-
- .../data/PlaylistContentStore.kt              | 228 +++++++++++++-----
+ .../data/PlaylistContentStore.kt              | 253 ++++++++++++++----
  .../data/local/AppDatabase.kt                 |  25 +-
  .../anotheriptvplayer/data/local/Entities.kt  |  16 +-
  .../data/local/LiveStreamDao.kt               |  35 +++
- .../anotheriptvplayer/data/local/SeriesDao.kt |  54 +++++
- .../data/local/VodStreamDao.kt                |  55 +++++
- .../networking/XtreamApiClient.kt             |  96 ++++++++
- .../anotheriptvplayer/player/MPVPlayer.kt     |  70 +++++-
+ .../anotheriptvplayer/data/local/SeriesDao.kt |  54 ++++
+ .../data/local/VodStreamDao.kt                |  55 ++++
+ .../networking/XtreamApiClient.kt             | 100 ++++++-
+ .../anotheriptvplayer/player/MPVPlayer.kt     |  70 ++++-
  .../anotheriptvplayer/ui/AppNavigation.kt     |   9 -
  .../ui/search/SearchScreen.kt                 |  91 +++----
- .../ui/tv/PremiumTvDashboardScreen.kt         | 117 ++++++---
+ .../ui/tv/PremiumTvDashboardScreen.kt         | 117 +++++---
  .../anotheriptvplayer/ui/tv/TvComponents.kt   |  52 ++++
- .../anotheriptvplayer/ui/tv/TvHomeScreen.kt   | 196 +++++++++------
+ .../anotheriptvplayer/ui/tv/TvHomeScreen.kt   | 196 +++++++++-----
  .../app/src/main/res/values-fr/strings.xml    |   1 +
  .../app/src/main/res/values-tr/strings.xml    |   1 +
  .../app/src/main/res/values/strings.xml       |   1 +
- 18 files changed, 812 insertions(+), 250 deletions(-)
+ 18 files changed, 839 insertions(+), 252 deletions(-)
 
 diff --git a/apps/android/TV_PREVIEW.md b/apps/android/TV_PREVIEW.md
 index 48c4ba5..32691d2 100644
@@ -78,7 +78,7 @@ index 111fc51..2671f87 100644
          testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
  
 diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/PlaylistContentStore.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/PlaylistContentStore.kt
-index 0aea1cf..728d564 100644
+index 0aea1cf..c8031ff 100644
 --- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/PlaylistContentStore.kt
 +++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/data/PlaylistContentStore.kt
 @@ -51,6 +51,7 @@ class PlaylistContentStore(
@@ -89,7 +89,15 @@ index 0aea1cf..728d564 100644
  
      private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
  
-@@ -109,6 +110,67 @@ class PlaylistContentStore(
+@@ -61,6 +62,7 @@ class PlaylistContentStore(
+      * so HTTP-completion callbacks resuming on IO can also compare safely.
+      */
+     @Volatile private var loadToken: UUID? = null
++    @Volatile private var tvMemoryMode = false
+ 
+     private val _activePlaylistId = MutableStateFlow<String?>(null)
+     val activePlaylistId: StateFlow<String?> = _activePlaylistId.asStateFlow()
+@@ -109,11 +111,74 @@ class PlaylistContentStore(
          scope.launch { loadPlaylistSuspending(playlist) }
      }
  
@@ -99,6 +107,7 @@ index 0aea1cf..728d564 100644
 +     * category browsing and search are served by paged SQL queries below.
 +     */
 +    suspend fun loadPlaylistForTvSuspending(playlist: Playlist) {
++        tvMemoryMode = true
 +        val token = UUID.randomUUID()
 +        loadToken = token
 +        _loadError.value = null
@@ -157,7 +166,49 @@ index 0aea1cf..728d564 100644
      /**
       * Convenience for callers that already have a coroutine to await on
       * (e.g. tests, or UI that wants to chain navigation after the sync).
-@@ -221,7 +283,52 @@ class PlaylistContentStore(
+      */
+     suspend fun loadPlaylistSuspending(playlist: Playlist) {
++        tvMemoryMode = false
+         val token = UUID.randomUUID()
+         loadToken = token
+ 
+@@ -176,7 +241,7 @@ class PlaylistContentStore(
+     suspend fun reloadFromDatabaseIfActive(playlistId: String) {
+         if (_activePlaylistId.value != playlistId) return
+         try {
+-            reloadFromDatabase(playlistId)
++            if (tvMemoryMode) reloadTvSnapshot(playlistId) else reloadFromDatabase(playlistId)
+         } catch (e: Throwable) {
+             _loadError.value = e.message
+         }
+@@ -199,6 +264,26 @@ class PlaylistContentStore(
+         _streamsLoaded.value = true
+     }
+ 
++    private suspend fun reloadTvSnapshot(playlistId: String) {
++        val categories = fetchCategoriesOnly(playlistId)
++        _liveCategories.value = categories.live
++        _vodCategories.value = categories.vod
++        _seriesCategories.value = categories.series
++
++        val recent = database.vodStreamDao().recentlyAdded(playlistId, TV_HOME_RECENT_LIMIT)
++        val rated = database.vodStreamDao().topRated(playlistId, TV_HOME_RATED_LIMIT)
++        _liveStreams.value = emptyList()
++        _vodStreams.value = (recent + rated)
++            .distinctBy { it.stream.streamId }
++            .take(TV_HOME_MOVIE_LIMIT)
++        _seriesItems.value = database.seriesDao()
++            .recentlyUpdated(playlistId, TV_HOME_SERIES_LIMIT)
++        _liveStreamsByCategoryId.value = emptyMap()
++        _vodStreamsByCategoryId.value = emptyMap()
++        _seriesItemsByCategoryId.value = emptyMap()
++        _streamsLoaded.value = true
++    }
++
+     // -------- Internal helpers --------
+ 
+     private fun clearLists() {
+@@ -221,7 +306,52 @@ class PlaylistContentStore(
      )
  
      private suspend fun needsNetworkBootstrap(playlistId: String): Boolean =
@@ -211,7 +262,7 @@ index 0aea1cf..728d564 100644
  
      /**
       * Snapshot of catalog-row counts for a single playlist. iOS
-@@ -288,20 +395,11 @@ class PlaylistContentStore(
+@@ -288,20 +418,11 @@ class PlaylistContentStore(
          // Network fetches first, outside the transaction — long-running I/O
          // and Room write transactions don't mix.
          progress(appContext.getString(R.string.sync_categories))
@@ -237,7 +288,7 @@ index 0aea1cf..728d564 100644
  
          val filterAdult = playlist.filterAdultContent
          val adultLiveCatIds = if (filterAdult) AdultContentFilter.adultCategoryIds(liveCats) else emptySet()
-@@ -314,11 +412,26 @@ class PlaylistContentStore(
+@@ -314,11 +435,26 @@ class PlaylistContentStore(
              addAll(mapCategoryRows(seriesCats, type = "series", playlistId = pid, filterAdult = filterAdult))
          }
  
@@ -269,7 +320,7 @@ index 0aea1cf..728d564 100644
                  LiveStreamEntity(
                      streamId = stream.streamId ?: 0,
                      name = stream.name ?: appContext.getString(R.string.common_unnamed),
-@@ -329,12 +442,16 @@ class PlaylistContentStore(
+@@ -329,12 +465,16 @@ class PlaylistContentStore(
                      playlistId = pid,
                  )
              }
@@ -291,7 +342,7 @@ index 0aea1cf..728d564 100644
                  VodStreamEntity(
                      streamId = stream.streamId ?: 0,
                      name = stream.name ?: appContext.getString(R.string.common_unnamed),
-@@ -347,44 +464,37 @@ class PlaylistContentStore(
+@@ -347,44 +487,37 @@ class PlaylistContentStore(
                      added = stream.added,
                  )
              }
@@ -359,7 +410,7 @@ index 0aea1cf..728d564 100644
      }
  
      private fun mapCategoryRows(
-@@ -409,5 +519,13 @@ class PlaylistContentStore(
+@@ -409,5 +542,13 @@ class PlaylistContentStore(
  
      companion object {
          private const val TAG = "PlaylistContentStore"
@@ -648,7 +699,7 @@ index 2ddaf3d..5e7a58c 100644
      @Update
      suspend fun update(row: VodStreamEntity)
 diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt
-index 9508aea..feb9039 100644
+index 9508aea..9f3c0fa 100644
 --- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt
 +++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/networking/XtreamApiClient.kt
 @@ -4,13 +4,16 @@ import android.util.Log
@@ -775,6 +826,17 @@ index 9508aea..feb9039 100644
      suspend fun getSeriesInfo(seriesId: Int): XtreamSeriesInfoResponse = fetch(
          action = "get_series_info",
          queryItems = mapOf("series_id" to seriesId.toString()),
+@@ -200,7 +296,9 @@ class XtreamApiClient(
+             OkHttpClient.Builder()
+                 .connectTimeout(15, TimeUnit.SECONDS)
+                 .readTimeout(60, TimeUnit.SECONDS)
+-                .callTimeout(120, TimeUnit.SECONDS)
++                // Large providers can take several minutes to stream all
++                // three catalogues even though bytes keep arriving normally.
++                .callTimeout(10, TimeUnit.MINUTES)
+                 .retryOnConnectionFailure(true)
+                 .build()
+         }
 diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/player/MPVPlayer.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/player/MPVPlayer.kt
 index fc1556c..9ebf0e4 100644
 --- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/player/MPVPlayer.kt
