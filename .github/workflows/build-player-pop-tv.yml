@@ -9,6 +9,7 @@ on:
       - 'android-tv-compile-fix.patch'
       - 'android-tv-performance-v0.2.patch'
       - 'android-tv-premium-v0.3.patch'
+      - 'android-tv-premium-v0.3-compile-fix.patch'
       - '.github/workflows/build-player-pop-tv.yml'
 
 permissions:
@@ -39,6 +40,7 @@ jobs:
           git -C source apply ../control/android-tv-compile-fix.patch
           git -C source apply ../control/android-tv-performance-v0.2.patch
           git -C source apply ../control/android-tv-premium-v0.3.patch
+          git -C source apply ../control/android-tv-premium-v0.3-compile-fix.patch
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
