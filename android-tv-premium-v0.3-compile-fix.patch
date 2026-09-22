@@ -1,0 +1,51 @@
+From 376958ffc69eb7319afe45d96a02eb4442dbb73a Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 22 Sep 2026 20:48:20 +0200
+Subject: [PATCH] fix(android-tv): import premium TV layout symbols
+
+---
+ .../anotheriptvplayer/ui/tv/PremiumTvDashboardScreen.kt        | 3 +++
+ .../java/dev/android/anotheriptvplayer/ui/tv/TvHomeScreen.kt   | 2 +-
+ 2 files changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/PremiumTvDashboardScreen.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/PremiumTvDashboardScreen.kt
+index fe13b49..3308eb1 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/PremiumTvDashboardScreen.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/PremiumTvDashboardScreen.kt
+@@ -7,10 +7,13 @@ import androidx.compose.foundation.layout.Box
+ import androidx.compose.foundation.layout.Column
+ import androidx.compose.foundation.layout.Spacer
+ import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
+ import androidx.compose.foundation.layout.height
+ import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.filled.ErrorOutline
++import androidx.compose.material.icons.filled.PlayArrow
+ import androidx.compose.material3.CircularProgressIndicator
+ import androidx.compose.material3.Icon
+ import androidx.compose.material3.Text
+diff --git a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvHomeScreen.kt b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvHomeScreen.kt
+index 496d7c4..9f4fa86 100644
+--- a/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvHomeScreen.kt
++++ b/apps/android/app/src/main/java/dev/android/anotheriptvplayer/ui/tv/TvHomeScreen.kt
+@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
+ import androidx.compose.foundation.layout.height
+ import androidx.compose.foundation.layout.padding
+ import androidx.compose.foundation.layout.size
+-import androidx.compose.foundation.layout.weight
+ import androidx.compose.foundation.lazy.LazyColumn
+ import androidx.compose.foundation.lazy.LazyRow
+ import androidx.compose.foundation.lazy.items
+@@ -32,6 +31,7 @@ import androidx.compose.material.icons.filled.Movie
+ import androidx.compose.material.icons.filled.PlayArrow
+ import androidx.compose.material.icons.filled.Tv
+ import androidx.compose.material3.CircularProgressIndicator
++import androidx.compose.material3.Icon
+ import androidx.compose.material3.Text
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.getValue
+-- 
+2.51.1
+
